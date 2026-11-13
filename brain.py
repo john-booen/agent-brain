@@ -450,6 +450,11 @@ def stream_choice(response):
             break
         event = json.loads(payload)
         if event.get("error"):
+            error = event["error"]
+            message = str(error.get("message", "") if isinstance(error, dict) else error).lower()
+            if finish == "length" or ("limit" in message and any(word in message for word in ("output", "completion", "length"))):
+                finish = "length"
+                break
             raise ModelRouteError("Model stream returned an upstream error")
         for choice in event.get("choices", []):
             content.append((choice.get("delta") or {}).get("content") or "")

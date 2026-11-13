@@ -118,6 +118,8 @@ class BrainTest(unittest.TestCase):
         self.assertEqual(brain.stream_choice([event, end, b'data: [DONE]\n'])["message"]["content"], "{}")
         with self.assertRaisesRegex(ValueError, "ended before a final response"):
             brain.stream_choice([event])
+        error = b'data: {"error":{"message":"Output token limit reached"}}\n'
+        self.assertEqual(brain.stream_choice([event, error])["finish_reason"], "length")
 
 
 if __name__ == "__main__":
