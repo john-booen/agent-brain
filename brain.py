@@ -12,6 +12,7 @@ import tempfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 REPO = Path(__file__).resolve().parent
@@ -80,6 +81,11 @@ def visible(row):
 def config():
     path = DATA / "config.json"
     return json.loads(path.read_text()) if path.exists() else {}
+
+
+def model_settings():
+    override = os.environ.get("AGENT_BRAIN_MODEL_CONFIG")
+    return json.loads(Path(override).read_text()) if override else config().get("model", {})
 
 
 def now():
@@ -422,8 +428,39 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
             "written": cursor.rowcount == 1, "card": str(DATA / "projects" / pid / "card.md")}
 
 
+class ModelQuotaError(RuntimeError):
+    def __init__(self, retry_after):
+        hint = f"; retry after {retry_after}s" if retry_after and retry_after.isascii() and retry_after.isdecimal() else ""
+        super().__init__("Model endpoint returned HTTP 429" + hint)
+        self.retry_after = retry_after
+
+
+class ModelRouteError(RuntimeError):
+    pass
+
+
+def stream_choice(response):
+    content = []
+    finish = None
+    for line in response:
+        if not line.startswith(b"data: "):
+            continue
+        payload = line[6:].strip()
+        if payload == b"[DONE]":
+            break
+        event = json.loads(payload)
+        if event.get("error"):
+            raise ModelRouteError("Model stream returned an upstream error")
+        for choice in event.get("choices", []):
+            content.append((choice.get("delta") or {}).get("content") or "")
+            finish = choice.get("finish_reason") or finish
+    if not finish:
+        raise ValueError("Model stream ended before a final response")
+    return {"message": {"content": "".join(content)}, "finish_reason": finish}
+
+
 def model(messages, schema=None):
-    settings = config().get("model", {})
+    settings = model_settings()
     endpoint = settings.get("url")
     model_id = settings.get("name")
     if not endpoint or not model_id:
@@ -440,8 +477,15 @@ def model(messages, schema=None):
     if env := settings.get("api_key_env"):
         headers["Authorization"] = "Bearer " + os.environ[env]
     request = Request(endpoint.rstrip("/") + "/chat/completions", json_text(body).encode(), headers=headers)
-    with urlopen(request, timeout=180) as response:
-        choice = json.load(response)["choices"][0]
+    try:
+        with urlopen(request, timeout=180) as response:
+            choice = stream_choice(response) if body.get("stream") else json.load(response)["choices"][0]
+    except HTTPError as exc:
+        if exc.code == 429:
+            raise ModelQuotaError(exc.headers.get("Retry-After")) from exc
+        if exc.code in (401, 403, 502, 503, 504):
+            raise ModelRouteError(f"Model endpoint returned HTTP {exc.code}") from exc
+        raise
     if choice.get("finish_reason") == "length":
         raise ValueError("Model output reached its token budget")
     content = choice["message"].get("content")
@@ -542,11 +586,27 @@ def summarize_session(db, session_id, force=False, metadata=None):
         return {"status": "unchanged", "session_id": session_id}
     correction = db.execute("SELECT projects FROM corrections WHERE session_id=?", (session_id,)).fetchone()
     corrected = json.loads(correction["projects"]) if correction else []
-    catalog = [{"name": row["name"], "reason": row["reason"]} for row in project_list(db)[:250]]
+    settings = model_settings()
+    projects = project_list(db)
+    if settings.get("match_catalog_names"):
+        dialogue = normalized("\n".join(row["text"] for row in messages))
+        projects = [row for row in projects if normalized(row["name"]) in dialogue]
+        catalog = [{"name": row["name"]} for row in projects[:250]]
+    else:
+        catalog = [{"name": row["name"], "reason": row["reason"]} for row in projects[:250]]
+    size = settings.get("chunk_chars", 4200)
+    if type(size) is not int or not 4200 <= size <= 64000:
+        raise ValueError("model.chunk_chars must be an integer between 4200 and 64000")
+    if not force:
+        checkpoint = db.execute("SELECT revision FROM summary_chunks WHERE session_id=? AND (revision=? OR revision LIKE ?) ORDER BY revision=? DESC LIMIT 1",
+                                (session_id, revision, revision + ":%", revision)).fetchone()
+        if checkpoint:
+            size = int(checkpoint["revision"].partition(":")[2] or 4200)
+    chunk_revision = revision if size == 4200 else f"{revision}:{size}"
     results = []
-    for part, batch in enumerate(chunks(messages)):
+    for part, batch in enumerate(chunks(messages, size)):
         cached = db.execute("SELECT data FROM summary_chunks WHERE session_id=? AND revision=? AND part=?",
-                            (session_id, revision, part)).fetchone()
+                            (session_id, chunk_revision, part)).fetchone()
         if cached and not force:
             entries = json.loads(cached["data"])
         else:
@@ -559,7 +619,7 @@ def summarize_session(db, session_id, force=False, metadata=None):
             entries = response["projects"]
             with db:
                 db.execute("INSERT OR REPLACE INTO summary_chunks VALUES(?,?,?,?)",
-                           (session_id, revision, part, json_text(entries)))
+                           (session_id, chunk_revision, part, json_text(entries)))
         evidence = {}
         for row in batch:
             evidence[row["ordinal"]] = row
@@ -599,7 +659,7 @@ def summarize_session(db, session_id, force=False, metadata=None):
                        (key, pid, "summary", payload["evidence_time"] or session["time"] or now(),
                         session["source"], session_id, json_text(payload)))
         db.execute("INSERT OR REPLACE INTO reviewed VALUES(?,?,?)", (session_id, review_revision, now()))
-        db.execute("DELETE FROM summary_chunks WHERE session_id=? AND revision<>?", (session_id, revision))
+        db.execute("DELETE FROM summary_chunks WHERE session_id=? AND revision<>?", (session_id, chunk_revision))
         for pid in list(affected):
             if not db.execute("SELECT 1 FROM work WHERE project_id=?", (pid,)).fetchone():
                 db.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -639,6 +699,8 @@ def backfill(db, agents, limit, force, sort):
             sid = row["id"]
             try:
                 result = summarize_session(db, sid, force=force, metadata=row)
+            except (ModelQuotaError, ModelRouteError):
+                raise
             except (ValueError, RuntimeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
                 result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__,
                           "detail": clean(str(exc))[:250]}

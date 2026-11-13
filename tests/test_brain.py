@@ -2,6 +2,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from urllib.error import HTTPError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,6 +83,41 @@ class BrainTest(unittest.TestCase):
         read.assert_not_called()
         model.assert_not_called()
         self.assertFalse(brain.is_codex_review({**metadata, "relationship_type": ""}))
+
+    def test_quota_stops_backfill_without_losing_prior_checkpoints(self):
+        session = {"messages": [{"ordinal": 1, "text": "a" * 4200}, {"ordinal": 2, "text": "b" * 4200}],
+                   "revision": "1", "time": None, "source": "kimi-work"}
+        row = {"id": "kimi-work:fictional", "agent": "kimi-work"}
+        quota = brain.ModelQuotaError("60")
+        with patch.object(brain, "history_sessions", return_value=iter([row])), \
+             patch.object(brain, "read_session", return_value=session), \
+             patch.object(brain, "model", side_effect=[{"projects": []}, quota]):
+            with self.assertRaises(brain.ModelQuotaError):
+                brain.backfill(self.db, ["kimi-work"], 0, False, "recent")
+        self.assertEqual(self.db.execute("SELECT count(*) FROM summary_chunks").fetchone()[0], 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM reviewed").fetchone()[0], 0)
+        with patch.object(brain, "read_session", return_value=session), \
+             patch.object(brain, "model_settings", return_value={"chunk_chars": 24000}), \
+             patch.object(brain, "model", return_value={"projects": []}) as model:
+            result = brain.summarize_session(self.db, row["id"], metadata=row)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(model.call_count, 1)
+        self.assertIn('"ordinal":2', model.call_args.args[0][1]["content"])
+
+    def test_http_quota_has_no_provider_payload(self):
+        error = HTTPError("https://example.invalid/v1/chat/completions", 429, "Too Many Requests",
+                          {"Retry-After": "60"}, None)
+        with patch.object(brain, "model_settings", return_value={"url": "https://example.invalid/v1", "name": "fictional"}), \
+             patch.object(brain, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(brain.ModelQuotaError, "retry after 60s"):
+                brain.model([])
+
+    def test_stream_excludes_reasoning_and_requires_complete_reply(self):
+        event = b'data: {"choices":[{"delta":{"reasoning_content":"ignore","content":"{}"}}]}\n'
+        end = b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+        self.assertEqual(brain.stream_choice([event, end, b'data: [DONE]\n'])["message"]["content"], "{}")
+        with self.assertRaisesRegex(ValueError, "ended before a final response"):
+            brain.stream_choice([event])
 
 
 if __name__ == "__main__":
