@@ -1,0 +1,16 @@
+{
+  "project": "Fictional Atlas",
+  "source": "codex",
+  "session_id": "codex:fictional-atlas-demo",
+  "work_id": "fictional-atlas-first-release",
+  "summary": "Prepared the first release checklist and confirmed the rollback owner.",
+  "conclusions": [
+    {"topic": "rollback", "text": "The release coordinator owns rollback.", "ordinal": 4}
+  ],
+  "files": [
+    {"path": "examples/atlas-release-checklist.md", "status": "已交付", "ordinal": 5}
+  ],
+  "todos": [
+    {"topic": "dry run", "text": "Run the staging dry run on Friday.", "ordinal": 6}
+  ]
+}

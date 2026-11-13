@@ -1,0 +1,193 @@
+import fs from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { homedir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { createInterface } from 'node:readline';
+
+const data = resolve(process.env.AGENT_BRAIN_DATA || join(homedir(), 'SharedBrain'));
+const program = process.env.AGENTSVIEW_BIN || 'agentsview';
+const zstdProgram = process.env.ZSTD_BIN || 'zstd';
+const roots = {
+  codex: ['.codex/sessions', '.codex/archived_sessions'],
+  cowork: ['Library/Application Support/Claude/local-agent-mode-sessions', 'Library/Application Support/Claude-3p/local-agent-mode-sessions'],
+  'deepseek-harness': ['.dsh/sessions'],
+  'kimi-work': ['Library/Application Support/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/sessions'],
+};
+const filenames = {
+  codex: /^rollout-.*\.jsonl(?:\.zst)?$/,
+  cowork: /^(?:.*\.jsonl|local_.*\.json)$/,
+  'deepseek-harness': /^session(?:\.v\d+)?\.jsonl(?:\.zstd)?$/,
+  'kimi-work': /^(?:wire\.jsonl|metadata\.json|session\.json|state\.json)$/,
+};
+const sensitiveKey = /(?:apikey|password|passwd|clientsecret|accesstoken|refreshtoken|authtoken|sessionkey|authorization|privatekey|cookie)$/i;
+const redactRules = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/-]{10,}={0,2}/gi, 'Bearer [REDACTED]'],
+  [/(\bhttps?:\/\/[^\s:/@]+:)[^\s/@]+@/gi, '$1[REDACTED]@'],
+  [/((?:[\w.-]*(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token)|password|passwd|pwd|密码)\s*["']?\s*[:=]\s*)(["'])(.*?)\2/giu, '$1$2[REDACTED]$2'],
+  [/((?:[\w.-]*(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token)|password|passwd|pwd|密码)\s*[:=]\s*)(?!["'\[])([^\s"',;}{<>]{4,})/giu, '$1[REDACTED]'],
+  [/\b(?:sk-(?:proj-|ant-api\d+-|svcacct-)?[A-Za-z0-9_-]{15,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{15,}|AKIA[A-Z0-9]{16}|AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g, '[REDACTED]'],
+];
+
+function scrub(value) {
+  if (typeof value === 'string') return redactRules.reduce((s, [re, replacement]) => s.replace(re, replacement), value);
+  if (Array.isArray(value)) return value.map(scrub);
+  if (!value || typeof value !== 'object') return value;
+  for (const key of Object.keys(value)) {
+    if (value[key] && sensitiveKey.test(key.replace(/[-_]/g, ''))) value[key] = '[REDACTED]';
+    else value[key] = scrub(value[key]);
+  }
+  return value;
+}
+
+function launch(command, args, options) {
+  const child = spawn(command, args, options);
+  const exit = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  return { child, exit };
+}
+
+async function* lines(input, stats) {
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+    if (!line.trim()) continue;
+    let row;
+    try { row = JSON.parse(line); } catch { stats.skippedLines++; continue; }
+    yield JSON.stringify(scrub(row)) + '\n';
+  }
+}
+
+async function copyTranscript(source, target, stats) {
+  const compressed = /\.zst(?:d)?$/.test(source);
+  const decoder = compressed && launch(zstdProgram, ['-dc', '--', source], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const input = decoder ? decoder.child.stdout : createReadStream(source);
+  if (target.endsWith('.zst')) {
+    const encoder = launch(zstdProgram, ['-q', '-1', '-c'], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const tasks = [
+      pipeline(lines(input, stats), encoder.child.stdin),
+      pipeline(encoder.child.stdout, createWriteStream(target + '.tmp', { mode: 0o600 })),
+      encoder.exit.then(code => { if (code) throw new Error('encoding failed'); }),
+    ];
+    if (decoder) tasks.push(decoder.exit.then(code => { if (code) throw new Error('decoding failed'); }));
+    await Promise.all(tasks);
+  } else {
+    const tasks = [pipeline(lines(input, stats), createWriteStream(target + '.tmp', { mode: 0o600 }))];
+    if (decoder) tasks.push(decoder.exit.then(code => { if (code) throw new Error('decoding failed'); }));
+    await Promise.all(tasks);
+  }
+}
+
+async function writeAtomic(path, value) {
+  await fs.writeFile(path + '.tmp', value, { mode: 0o600 });
+  await fs.rename(path + '.tmp', path);
+}
+
+async function main() {
+  process.umask(0o077);
+  await fs.mkdir(data, { recursive: true, mode: 0o700 });
+  const repo = new URL('./', import.meta.url);
+  const repoPath = await fs.realpath(repo);
+  const actualData = await fs.realpath(data);
+  const relation = relative(repoPath, actualData);
+  if (!relation || (relation !== '..' && !relation.startsWith('../'))) {
+    throw new Error('AGENT_BRAIN_DATA must be outside the code repository');
+  }
+  const lock = await fs.open(join(data, '.collect.lock'), 'wx', 0o600);
+  try { await collect(); }
+  finally { await lock.close(); await fs.unlink(join(data, '.collect.lock')); }
+}
+
+async function collect() {
+  const archive = join(data, 'agentsview');
+  const manifestPath = join(data, 'sources.json');
+  const sources = {};
+  const report = { startedAt: new Date().toISOString(), sources: {} };
+  const previous = await fs.readFile(manifestPath, 'utf8').then(JSON.parse).catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return {};
+  });
+  await fs.mkdir(archive, { recursive: true, mode: 0o700 });
+  const jobs = [];
+  for (const [agent, dirs] of Object.entries(roots)) {
+    const stats = report.sources[agent] = { found: 0, prepared: 0, unchanged: 0, failed: 0, missing: 0, skippedLines: 0 };
+    sources[agent] = [];
+    for (const [index, rel] of dirs.entries()) {
+      const root = join(homedir(), rel);
+      const dest = join(data, 'sources', agent, String(index));
+      let entries;
+      try { entries = await fs.readdir(root, { recursive: true, withFileTypes: true }); }
+      catch (error) { if (error.code === 'ENOENT') { stats.missing++; continue; } throw error; }
+      sources[agent].push(dest);
+      await fs.mkdir(dest, { recursive: true, mode: 0o700 });
+      for (const entry of entries) {
+        if (!entry.isFile() || !filenames[agent].test(entry.name)) continue;
+        stats.found++;
+        const source = join(entry.parentPath, entry.name);
+        const filename = relative(root, source).replace(/\.zstd$/, '');
+        jobs.push({ source, target: join(dest, filename), stats });
+      }
+    }
+  }
+
+  const manifest = {};
+  let position = 0;
+  async function worker() {
+    while (position < jobs.length) {
+      const { source, target, stats } = jobs[position++];
+      const key = relative(data, target);
+      try {
+        const before = await fs.stat(source);
+        const fingerprint = [before.size, before.mtimeMs, before.ino].join(':');
+        if (previous[key]?.fingerprint === fingerprint && await fs.stat(target).catch(() => null)) {
+          manifest[key] = previous[key];
+          stats.unchanged++;
+          continue;
+        }
+        await fs.mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        if (source.endsWith('.json')) {
+          await fs.writeFile(target + '.tmp', JSON.stringify(scrub(JSON.parse(await fs.readFile(source, 'utf8')))), { mode: 0o600 });
+        } else {
+          await copyTranscript(source, target, stats);
+        }
+        await fs.rename(target + '.tmp', target);
+        manifest[key] = { source, fingerprint };
+        stats.prepared++;
+      } catch {
+        if (previous[key]) manifest[key] = previous[key];
+        await fs.rm(target + '.tmp', { force: true });
+        stats.failed++;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 4 }, worker));
+  await writeAtomic(manifestPath, JSON.stringify(manifest));
+  const env = { ...process.env, AGENTSVIEW_DATA_DIR: archive, AGENTSVIEW_TELEMETRY_ENABLED: '0', AGENTSVIEW_NO_DAEMON: '1' };
+  for (const name of ['CODEX_SESSIONS_DIR', 'COWORK_DIR', 'KIMI_WORK_DIR', 'DEEPSEEK_HARNESS_SESSIONS_DIR']) delete env[name];
+  const catalog = launch(program, ['source', 'list', '--json'], { env, stdio: ['ignore', 'pipe', 'inherit'] });
+  let output = '';
+  for await (const part of catalog.child.stdout) output += part;
+  if (await catalog.exit) throw new Error('AgentsView source list failed');
+  const disabled = JSON.parse(output).agents.filter(item => !item.import_only && !roots[item.type]).map(item => item.type);
+  const config = [
+    'archive_content = "transcripts"',
+    'disable_update_check = true',
+    'tool_result_images = "drop"',
+    'disabled_agents = ' + JSON.stringify(disabled),
+  ];
+  for (const [agent, dirs] of Object.entries(sources)) {
+    config.push('', '[agents.' + agent + ']', 'dirs = ' + JSON.stringify(dirs));
+  }
+  await writeAtomic(join(archive, 'config.toml'), config.join('\n') + '\n');
+  await writeAtomic(join(data, 'coverage.json'), JSON.stringify(report, null, 2));
+  const sync = launch(program, ['source', 'sync'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+  report.exit = await sync.exit;
+  report.completedAt = new Date().toISOString();
+  await writeAtomic(join(data, 'coverage.json'), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report, null, 2));
+  if (report.exit) process.exitCode = 1;
+}
+
+main().catch(error => { console.error(error.message); process.exitCode = 1; });

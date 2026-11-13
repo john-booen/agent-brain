@@ -1,0 +1,17 @@
+*
+!/.gitignore
+!/README.md
+!/README.zh-CN.md
+!/brain.py
+!/collect.mjs
+!/skills/
+!/skills/agent-brain/
+!/skills/agent-brain/SKILL.md
+!/examples/
+!/examples/demo.json
+!/examples/demo.svg
+!/examples/config.example.json
+!/scripts/
+!/scripts/demo.py
+!/tests/
+!/tests/test_brain.py

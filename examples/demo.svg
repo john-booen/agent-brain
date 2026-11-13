@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="284" viewBox="0 0 820 284" role="img" aria-labelledby="title">
+  <title id="title">Fictional Codex-to-Cowork handoff</title>
+  <rect width="820" height="284" rx="18" fill="#f3f7fb"/>
+  <g font-family="system-ui, sans-serif" fill="#172a40">
+    <text x="40" y="46" font-size="23" font-weight="700">Fictional Atlas · cross-client project progress</text>
+    <rect x="40" y="72" width="330" height="172" rx="12" fill="#fff"/>
+    <rect x="449" y="72" width="331" height="172" rx="12" fill="#fff"/>
+    <text x="62" y="110" font-size="17" font-weight="700">Codex · log_work</text>
+    <text x="62" y="145" font-size="15">Release checklist delivered</text>
+    <text x="62" y="176" font-size="15">Release coordinator owns rollback</text>
+    <text x="62" y="207" font-size="14" fill="#3d536b">Source: fictional Codex session, #4–6</text>
+    <path d="M386 158h44m-11-8 11 8-11 8" fill="none" stroke="#446a9b" stroke-width="2"/>
+    <text x="470" y="110" font-size="17" font-weight="700">Cowork · get_project</text>
+    <text x="470" y="145" font-size="15">“Where did Atlas leave off?”</text>
+    <text x="470" y="176" font-size="15">Next: Friday's staging dry run</text>
+    <text x="470" y="207" font-size="14" fill="#3d536b">Evidence: Codex · fictional session, #6</text>
+  </g>
+</svg>
