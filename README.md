@@ -33,3 +33,5 @@ The same handoff was tested in Claude Cowork by opening the generated Markdown c
 ## Data
 
 Agent transcripts are read in place. The collector prepares separate copies with recognizable credentials replaced by placeholders, then points AgentsView at those copies. Redaction is best effort. Source files, configuration with real endpoints, archives and project cards belong outside this repository. A configured model processes the text it receives. Use a local model to keep backfill on the machine. Legacy chat instructions are reference material.
+
+Backfill leaves Codex approval subagents in the archive and skips generating project summaries for their machine-generated reviews. If the configured endpoint supports OpenAI-style `json_schema`, set `model.structured_output` to `true` to constrain summary output. A backfill exits with an error status if any session failed and preserves completed chunks for a rerun.

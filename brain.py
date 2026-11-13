@@ -17,6 +17,10 @@ from urllib.request import Request, urlopen
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
 SOURCES = ("codex", "cowork", "deepseek-harness", "kimi-work")
+CODEX_REVIEW_PREFIXES = (
+    "The following is the Codex agent history whose request action you are assessing.",
+    "The following is the Codex agent history added since your last approval assessment.",
+)
 STATES = ("草稿", "已交付", "用户确认", "已失效")
 ARRAYS = ("conclusions", "files", "todos", "blockers")
 MASK = "[REDACTED]"
@@ -190,10 +194,9 @@ def session_pages(session_id, start=0, limit=100, all_pages=False):
         cursor = next_cursor
 
 
-def read_session(session_id, start=0, limit=30, all_pages=False):
-    meta = archive("session", "get", session_id)
-    if isinstance(meta.get("session"), dict):
-        meta = meta["session"]
+def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None):
+    meta = metadata if metadata is not None else archive("session", "get", session_id)
+    meta = meta.get("session", meta)
     transcript = []
     revision, next_from = "", None
     for page in session_pages(session_id, start, limit, all_pages):
@@ -213,6 +216,11 @@ def read_session(session_id, start=0, limit=30, all_pages=False):
         "path": source_path(meta), "messages": transcript, "next_from": next_from,
         "status": "ok" if transcript else "内容不全",
     }
+
+
+def is_codex_review(metadata):
+    return (metadata.get("agent") == "codex" and metadata.get("relationship_type") == "subagent"
+            and str(metadata.get("first_message") or "").lstrip().startswith(CODEX_REVIEW_PREFIXES))
 
 
 def source_status():
@@ -414,7 +422,7 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
             "written": cursor.rowcount == 1, "card": str(DATA / "projects" / pid / "card.md")}
 
 
-def model(messages):
+def model(messages, schema=None):
     settings = config().get("model", {})
     endpoint = settings.get("url")
     model_id = settings.get("name")
@@ -424,6 +432,10 @@ def model(messages):
         messages = [{**messages[0], "content": messages[0]["content"] + "\n" + instruction}, *messages[1:]]
     body = {"model": model_id, "messages": messages, "stream": False, "temperature": 0,
             "max_tokens": settings.get("max_tokens", 2500), **settings.get("extra_body", {})}
+    if schema and settings.get("structured_output"):
+        body["response_format"] = {"type": "json_schema", "json_schema": {
+            "name": "agent_brain", "strict": True, "schema": schema,
+        }}
     headers = {"Content-Type": "application/json"}
     if env := settings.get("api_key_env"):
         headers["Authorization"] = "Bearer " + os.environ[env]
@@ -432,10 +444,16 @@ def model(messages):
         choice = json.load(response)["choices"][0]
     if choice.get("finish_reason") == "length":
         raise ValueError("Model output reached its token budget")
-    content = choice["message"]["content"].strip()
+    content = choice["message"].get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Model returned no visible JSON")
+    content = content.strip()
     if content.startswith("```"):
         content = re.sub(r"^\x60{3}(?:json)?\s*|\s*\x60{3}$", "", content)
-    return safe(json.loads(content))
+    result = json.loads(content)
+    if not isinstance(result, dict):
+        raise ValueError("Model output must be a JSON object")
+    return safe(result)
 
 
 def chunks(messages, limit=4200):
@@ -487,7 +505,7 @@ def reconcile_projects(results, catalog, corrected):
             {"role": "system", "content": instruction},
             {"role": "user", "content": json_text({"candidates": evidence, "projects": catalog,
                                                    "confirmed_projects": corrected})},
-        ])
+        ], schema=GROUP_SCHEMA)
         groups = decision.get("groups") if isinstance(decision, dict) else None
         assignments = []
         for group in groups if isinstance(groups, list) else []:
@@ -509,8 +527,13 @@ def reconcile_projects(results, catalog, corrected):
     return [(part, mapping[name], payload) for part, name, payload in results]
 
 
-def summarize_session(db, session_id, force=False):
-    session = read_session(session_id, limit=100, all_pages=True)
+def summarize_session(db, session_id, force=False, metadata=None):
+    if metadata is None:
+        metadata = archive("session", "get", session_id)
+        metadata = metadata.get("session", metadata)
+    if is_codex_review(metadata):
+        return {"status": "internal_review", "session_id": session_id}
+    session = read_session(session_id, limit=100, all_pages=True, metadata=metadata)
     messages = session["messages"]
     revision = stable(session["revision"] + json_text(messages))
     review_revision = "3:" + revision
@@ -530,7 +553,7 @@ def summarize_session(db, session_id, force=False):
             response = model([
                 {"role": "system", "content": SUMMARY_PROMPT},
                 {"role": "user", "content": json_text({"projects": catalog, "confirmed_projects": corrected, "dialogue": batch})},
-            ])
+            ], schema=PROJECT_SCHEMA)
             if not isinstance(response.get("projects"), list):
                 raise ValueError("Invalid project summary")
             entries = response["projects"]
@@ -608,19 +631,22 @@ def history_sessions(agent, sort):
 
 def backfill(db, agents, limit, force, sort):
     completed = 0
+    failures = 0
     for agent in agents:
         for row in history_sessions(agent, sort):
             if limit and completed >= limit:
-                return
+                return failures
             sid = row["id"]
             try:
-                result = summarize_session(db, sid, force=force)
+                result = summarize_session(db, sid, force=force, metadata=row)
             except (ValueError, RuntimeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
                 result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__,
                           "detail": clean(str(exc))[:250]}
+                failures += 1
             print(json_text(result), flush=True)
             if result["status"] != "unchanged":
                 completed += 1
+    return failures
 
 
 ITEM = {"type": "object", "properties": {"topic": {"type": "string"}, "text": {"type": "string"},
@@ -628,6 +654,24 @@ ITEM = {"type": "object", "properties": {"topic": {"type": "string"}, "text": {"
 FILE = {"type": "object", "properties": {"path": {"type": "string"}, "status": {"type": "string", "enum": STATES},
         "ordinal": {"type": "integer", "minimum": 0}}, "required": ["path", "status"], "additionalProperties": False}
 STRING = {"type": "string"}
+
+
+def object_schema(properties, required):
+    return {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
+
+
+PROJECT_ITEM = object_schema({"topic": STRING, "text": STRING, "ordinal": {"type": "integer"}},
+                             ["topic", "text", "ordinal"])
+PROJECT_FILE = object_schema({"path": STRING, "status": {"type": "string", "enum": list(STATES)},
+                              "ordinal": {"type": "integer"}}, ["path", "status", "ordinal"])
+PROJECT_FIELDS = {"name": STRING, "reason": STRING, "summary": STRING, "ordinal": {"type": "integer"},
+                  **{key: {"type": "array", "items": PROJECT_FILE if key == "files" else PROJECT_ITEM}
+                     for key in ARRAYS}}
+PROJECT_SCHEMA = object_schema({"projects": {"type": "array", "items": object_schema(PROJECT_FIELDS, list(PROJECT_FIELDS))}},
+                               ["projects"])
+GROUP_SCHEMA = object_schema({"groups": {"type": "array", "items": object_schema(
+    {"name": STRING, "indices": {"type": "array", "items": {"type": "integer"}}}, ["name", "indices"])}}, ["groups"])
+
 TOOLS = {
     "list_projects": ("List shared projects and source coverage.", {}, []),
     "get_project": ("Read the current progress card by project name or ID.", {"project": STRING}, ["project"]),
@@ -738,7 +782,9 @@ def main():
         if args.command == "mcp":
             mcp(db)
         elif args.command == "backfill":
-            backfill(db, args.agent or SOURCES, args.limit, args.force, args.sort)
+            if failures := backfill(db, args.agent or SOURCES, args.limit, args.force, args.sort):
+                print(f"{failures} sessions failed and can be retried.", file=sys.stderr)
+                return 1
         elif args.command == "summarize":
             print(json_text(summarize_session(db, args.session_id, args.force)))
         elif args.command == "correct":
@@ -758,7 +804,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
         print(clean(str(error)), file=sys.stderr)
         sys.exit(1)

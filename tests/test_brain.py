@@ -54,8 +54,9 @@ class BrainTest(unittest.TestCase):
                                "files": [{"path": "/tmp/fictional.md", "status": "已交付", "ordinal": 1},
                                          {"path": "/tmp/invented.md", "status": "已交付", "ordinal": 1}]}]}
         with patch.object(brain, "read_session", return_value=session), patch.object(brain, "model", return_value=model) as call:
-            a = brain.summarize_session(self.db, "kimi-work:fictional")
-            b = brain.summarize_session(self.db, "kimi-work:fictional")
+            metadata = {"agent": "kimi-work"}
+            a = brain.summarize_session(self.db, "kimi-work:fictional", metadata=metadata)
+            b = brain.summarize_session(self.db, "kimi-work:fictional", metadata=metadata)
         self.assertEqual(a["records"], 1)
         self.assertEqual(b["status"], "unchanged")
         self.assertEqual(call.call_count, 1)
@@ -71,6 +72,16 @@ class BrainTest(unittest.TestCase):
                                                        {"groups": [{"name": "Fictional Atlas", "indices": [0, 1]}]}]):
             reconciled = brain.reconcile_projects(results, [], [])
         self.assertEqual(reconciled, [(0, "Fictional Atlas", payload), (1, "Fictional Atlas", payload)])
+
+    def test_approval_history_stays_out_of_model_input(self):
+        metadata = {"agent": "codex", "relationship_type": "subagent",
+                    "first_message": brain.CODEX_REVIEW_PREFIXES[0] + " Fictional history"}
+        with patch.object(brain, "read_session") as read, patch.object(brain, "model") as model:
+            result = brain.summarize_session(self.db, "codex:fictional-review", metadata=metadata)
+        self.assertEqual(result["status"], "internal_review")
+        read.assert_not_called()
+        model.assert_not_called()
+        self.assertFalse(brain.is_codex_review({**metadata, "relationship_type": ""}))
 
 
 if __name__ == "__main__":
