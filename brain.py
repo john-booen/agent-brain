@@ -593,11 +593,11 @@ def summarize_session(db, session_id, force=False):
             "new_projects": new_projects}
 
 
-def history_sessions(agent):
+def history_sessions(agent, sort):
     cursor = None
     while True:
         flags = ["session", "list", "--agent", agent, "--include-children", "--include-one-shot",
-                 "--include-automated", "--limit", 100]
+                 "--include-automated", "--limit", 100, "--sort", sort]
         if cursor:
             flags.extend(["--cursor", cursor])
         page = archive(*flags)
@@ -606,17 +606,18 @@ def history_sessions(agent):
             return
 
 
-def backfill(db, agents, limit, force):
+def backfill(db, agents, limit, force, sort):
     completed = 0
     for agent in agents:
-        for row in history_sessions(agent):
+        for row in history_sessions(agent, sort):
             if limit and completed >= limit:
                 return
             sid = row["id"]
             try:
                 result = summarize_session(db, sid, force=force)
             except (ValueError, RuntimeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
-                result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__}
+                result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__,
+                          "detail": clean(str(exc))[:250]}
             print(json_text(result), flush=True)
             if result["status"] != "unchanged":
                 completed += 1
@@ -728,6 +729,7 @@ def main():
     history.add_argument("--agent", action="append", choices=SOURCES)
     history.add_argument("--limit", type=int, default=0)
     history.add_argument("--force", action="store_true")
+    history.add_argument("--sort", default="recent", choices=("recent", "messages:asc"))
     correction = commands.add_parser("correct")
     correction.add_argument("session_id")
     correction.add_argument("projects", nargs="+")
@@ -736,7 +738,7 @@ def main():
         if args.command == "mcp":
             mcp(db)
         elif args.command == "backfill":
-            backfill(db, args.agent or SOURCES, args.limit, args.force)
+            backfill(db, args.agent or SOURCES, args.limit, args.force, args.sort)
         elif args.command == "summarize":
             print(json_text(summarize_session(db, args.session_id, args.force)))
         elif args.command == "correct":

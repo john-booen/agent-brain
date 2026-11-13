@@ -10,7 +10,7 @@
 
 1. 将 `examples/config.example.json` 复制为数据目录下的 `config.json`，填入模型地址与模型名。
 2. 若 AgentsView 不在 PATH，设置 `AGENTSVIEW_BIN`。采集前停止这个档案的 AgentsView 服务，然后运行 `node collect.mjs`。如只需更新指定来源，可以传入来源名，例如 `node collect.mjs kimi-work cowork`。查询时会按需启动启用认证的本机回环服务。
-3. 运行 `python3 brain.py backfill`，生成 `_index.md`、各项目 `card.md` 与 `log.md`。可用 `--limit N` 先处理一批。
+3. 运行 `python3 brain.py backfill`，生成 `_index.md`、各项目 `card.md` 与 `log.md`。可用 `--agent kimi-work --sort messages:asc --limit 8` 先跑一小批短会话。重跑会跳过已经处理且未变化的会话。
 4. 将 `python3 /绝对路径/agent-brain/brain.py mcp` 注册为本地 MCP，再启用 [skill](skills/agent-brain/SKILL.md) 或把规则加入客户端工作说明。
 
 Codex 用本地 MCP。Claude Cowork 用该模式支持的本地插件或工作说明。DeepSeek Harness 用 stdio 连接器。Kimi Work 用个人插件。四端连接同一个本机数据目录。云端 Cowork 会话的读取取决于可用的本地副本或官方导出。
