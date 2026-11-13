@@ -3,6 +3,8 @@
 !/README.md
 !/README.zh-CN.md
 !/brain.py
+!/packet.py
+!/file_text.py
 !/collect.mjs
 !/skills/
 !/skills/agent-brain/
@@ -15,3 +17,4 @@
 !/scripts/demo.py
 !/tests/
 !/tests/test_brain.py
+!/tests/test_packet.py

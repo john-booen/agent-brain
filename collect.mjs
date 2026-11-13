@@ -5,11 +5,13 @@ import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
+import { fileURLToPath } from 'node:url';
 
 const data = resolve(process.env.AGENT_BRAIN_DATA || join(homedir(), 'SharedBrain'));
 const program = process.env.AGENTSVIEW_BIN || 'agentsview';
 const zstdProgram = process.env.ZSTD_BIN || 'zstd';
 const useDaemon = process.env.AGENT_BRAIN_SYNC_DAEMON === '1';
+const packetPython = process.env.AGENT_BRAIN_PACKET_PYTHON || (useDaemon && process.platform === 'darwin' ? '/opt/homebrew/bin/python3.12' : '');
 const stagingVersion = 3;
 const roots = {
   codex: ['.codex/sessions', '.codex/archived_sessions'],
@@ -270,7 +272,17 @@ async function collect() {
   }
   await writeAtomic(join(data, 'coverage.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
-  if (report.exit) process.exitCode = 1;
+  if (report.exit) {
+    process.exitCode = 1;
+  } else if (packetPython) {
+    try {
+      const builder = launch(packetPython, ['-B', fileURLToPath(new URL('brain.py', import.meta.url)),
+        'build-packets', '--files'], { env: { ...process.env, AGENT_BRAIN_DATA: data }, stdio: ['ignore', 'inherit', 'inherit'] });
+      if (await builder.exit) console.error('Project packet refresh failed');
+    } catch (error) {
+      console.error('Project packet refresh failed:', error.message);
+    }
+  }
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });
