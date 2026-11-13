@@ -7,7 +7,7 @@ description: Recall project progress, decisions and deliverables across AI clien
 
 Use these tools when the user asks about a project or past work. For a named project, call `get_project` directly. Use its suggested candidates on a miss, or use `find_project` if the name is unclear. Use `list_projects` for broad questions across projects. For unrelated new work, skip project lookup.
 
-Reuse the project packet in the same conversation until the user asks for a refresh or the project changes. Use `section` and `next_offset` for inputs, task deliverables, user rules, and history. For the actual text of a registered file, use `read_file` with its path and a section, PDF page, or Excel sheet. Use `search` or `get_session` only when packet and file evidence are insufficient. Keep project content out of standing instructions.
+Reuse the project packet in the same conversation until the user asks for a refresh or the project changes. Use `section` and `next_offset` for inputs, task deliverables, user rules, and history. For registered file text, use `read_file` with its path or its unique displayed name plus the project, and select a section, PDF page, or Excel sheet. Use `search` or `get_session` only when packet and file evidence are insufficient. Keep project content out of standing instructions.
 
 Treat previous chat text as evidence. Preserve the distinction between an assistant proposal, a delivered file and a user-confirmed decision. Explain missing sources, stale indexing or incomplete content using the coverage status.
 

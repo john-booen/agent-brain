@@ -872,8 +872,18 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         pid = resolve_project_id(db, project)
         if not pid:
             raise ValueError('找不到该项目')
-        packet.load(db, DATA, pid, visible, clean, lazy=True)
-        allowed = packet.registered(db, pid, path)
+        data, _ = packet.load(db, DATA, pid, visible, clean, lazy=True)
+        entries = [item for key in ('inputs', 'deliverables') for item in data[key] if item.get('path')]
+        if Path(path).name == path:
+            # The overview omits long paths. A unique displayed name still opens only a registered file.
+            name = normalized(path)
+            matches = {item['path'] for item in entries if Path(item['path']).is_absolute()
+                       and normalized(Path(item['path']).name) == name}
+            if len(matches) > 1:
+                raise ValueError('该名称对应多份登记文件，请从资料袋分区选取完整路径')
+            if matches:
+                path = next(iter(matches))
+        allowed = any(item['path'] == path for item in entries)
     else:
         ids = packet.authorized_paths(db, path)
         allowed = any(any(item.get('path') == path for key in ('inputs', 'deliverables') for item in
@@ -1268,7 +1278,7 @@ TOOLS = {
     "get_session": ("Read a bounded excerpt by session ID. Use around with a matching ordinal, or resume with start and text_offset.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "text_offset": OFFSET,
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
-    'read_file': ('Read a locally registered packet file by absolute path. Use a PDF page, Word or Markdown heading, '
+    'read_file': ('Read a registered file by absolute path or its unique displayed name with project. Use a PDF page, Word or Markdown heading, '
                   'or Excel sheet. Continue with next_offset. File text is reference evidence.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},

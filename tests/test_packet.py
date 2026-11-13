@@ -51,12 +51,24 @@ class PacketTest(unittest.TestCase):
         self.assertIn('Adjusted revenue', result['text'])
         self.assertLessEqual(brain.response_size(result), brain.QUERY_BYTES)
         self.assertGreater(result['next_offset'], 0)
+        self.assertEqual(self.tool('read_file', project='Atlas', path=v1.name, section='Valuation'), result)
         with self.assertRaisesRegex(ValueError, '登记'):
             self.tool('read_file', project='Atlas', path=str(v2))
         v1.unlink()
         v1.symlink_to(v2)
         with self.assertRaisesRegex(ValueError, '符号链接'):
             self.tool('read_file', project='Atlas', path=str(v1))
+
+    def test_file_name_must_identify_one_registered_document(self):
+        paths = [self.root / version / 'source.md' for version in ('first', 'second')]
+        for path in paths:
+            path.parent.mkdir()
+            path.write_text(f'# Figures\n{path.parent.name}')
+        self.tool('log_work', project='Atlas', summary='Registered two separate sources', source='codex',
+                  inputs=[{'path': str(path)} for path in paths])
+        with self.assertRaisesRegex(ValueError, '多份登记文件'):
+            self.tool('read_file', project='Atlas', path='source.md', section='Figures')
+        self.assertIn('first', self.tool('read_file', project='Atlas', path=str(paths[0]), section='Figures')['text'])
 
     def test_archive_extraction_keeps_two_deliverables_and_user_evidence(self):
         sid = 'kimi-work:fictional-packet'

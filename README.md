@@ -26,7 +26,7 @@ To keep the local index up to date, run `AGENT_BRAIN_SYNC_DAEMON=1 node collect.
 
 Project packets retain source materials, one current deliverable per task, and evidence-backed user requirements. `get_project` supports `inputs`, `deliverables`, `rules`, `todos`, `history`, and `timeline`. `log_work` accepts `inputs`, `deliverables` with a stable `task` name, and scoped `rules`. Use `confirmed` only for a version the user explicitly selected. `build-packets --files` prebuilds active packets and caches short extracts by file fingerprint. Other projects build on first access. Set `AGENT_BRAIN_PACKET_PYTHON` to refresh packets after collection. The local Homebrew macOS scheduler path does this by default.
 
-Use `read_file` with a registered absolute path and a Word or Markdown heading, a PDF page or keyword, or an Excel sheet. Resume with `next_offset` on longer sections. PDF extraction uses `pdftotext`. Returned text is evidence for the current client. Use `merge-candidates` to review possible duplicates, `merge-projects` to retain old names and IDs as aliases, and `move-record` to correct a specific derived work record.
+Use `read_file` with a registered absolute path or the project and a unique filename shown on its card. Select a Word or Markdown heading, a PDF page or keyword, or an Excel sheet. Resume with `next_offset` on longer sections. PDF extraction uses `pdftotext`. Returned text is evidence for the current client. Use `merge-candidates` to review possible duplicates, `merge-projects` to retain old names and IDs as aliases, and `move-record` to correct a specific derived work record.
 
 ## Fictional demo
 

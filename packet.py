@@ -557,14 +557,6 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     return result, bool(updated)
 
 
-def registered(db, project_id, value):
-    row = db.execute('SELECT data FROM project_packets WHERE project_id=?', (project_id,)).fetchone()
-    if not row:
-        return False
-    data = json.loads(row['data'])
-    return any(item.get('path') == value for key in ('inputs', 'deliverables') for item in data[key])
-
-
 def authorized_paths(db, value):
     return [row[0] for row in db.execute("""
         SELECT p.project_id FROM project_packets p
