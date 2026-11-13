@@ -24,7 +24,9 @@ The tools are `list_projects`, `get_project`, `search`, `get_session`, and `log_
 
 ## Fictional demo
 
-Run `python3 scripts/demo.py`. A fictional Codex work log appears in the same project card when a second MCP client asks for progress. The command runs locally with temporary data. A live Cowork session uses the same tool call, `get_project`.
+Run `python3 scripts/demo.py`. A fictional Codex work log appears in the same project card when a second MCP client asks for progress. The command runs locally with temporary data.
+
+The same handoff was tested in Claude Cowork by opening the generated Markdown card in a test folder and asking, “For Fictional Atlas, give its current progress, rollback owner, next step, and Codex source.” Cowork returned the prepared checklist, the release coordinator, the Friday dry run and the `codex:fictional-atlas-demo` reference. This demo uses Cowork's file reader.
 
 ![Fictional Codex-to-Cowork project progress demo](examples/demo.svg)
 

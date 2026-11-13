@@ -17,7 +17,9 @@ Codex 用本地 MCP。Claude Cowork 用该模式支持的本地插件或工作�
 
 ## 虚构演示
 
-运行 `python3 scripts/demo.py`。演示用第一个 MCP 客户端写入一条虚构 Codex 工作记录，再用第二个客户端读取同一张进展卡。接好实际 Cowork 后，在窗口里问「Fictional Atlas 做到哪了」即可走相同接口。
+运行 `python3 scripts/demo.py`。演示用第一个 MCP 客户端写入一条虚构 Codex 工作记录，再用第二个客户端读取同一张进展卡。
+
+我也在实际的 Claude Cowork 窗口里打开了生成的 Markdown 进展卡，问「Fictional Atlas 做到哪了，谁负责回滚，下一步是什么，请附 Codex 出处」。Cowork 回读了已经准备好的发布清单、负责回滚的发布协调员、周五预演，以及 `codex:fictional-atlas-demo` 的出处。这段演示走的是 Cowork 的文件读取入口。
 
 ![虚构的跨工具项目进展演示](examples/demo.svg)
 

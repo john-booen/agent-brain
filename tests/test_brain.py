@@ -62,6 +62,14 @@ class BrainTest(unittest.TestCase):
         self.assertNotIn("invented.md", card)
         self.assertIn("kimi-work:fictional#1", card)
 
+    def test_reconcile_two_names_for_the_same_project(self):
+        payload = {"reason": "Both messages discuss the same release."}
+        results = [(0, "Fictional Atlas", payload), (1, "Atlas release checklist", payload)]
+        mapping = {"Fictional Atlas": "Fictional Atlas", "Atlas release checklist": "Fictional Atlas"}
+        with patch.object(brain, "model", return_value={"mapping": mapping}):
+            reconciled = brain.reconcile_projects(results, [], [])
+        self.assertEqual(reconciled, [(0, "Fictional Atlas", payload), (1, "Fictional Atlas", payload)])
+
 
 if __name__ == "__main__":
     unittest.main()

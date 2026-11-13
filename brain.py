@@ -21,8 +21,8 @@ STATES = ("草稿", "已交付", "用户确认", "已失效")
 ARRAYS = ("conclusions", "files", "todos", "blockers")
 MASK = "[REDACTED]"
 CREDENTIAL = re.compile(
-    r"(?im)(\b[\w.-]*(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token)"
-    r"|\bpassword|\bpasswd|\bpwd|密码)(\s*[\x22\x27]?\s*[:=]\s*)(\x22[^\x22\r\n]*\x22|\x27[^\x27\r\n]*\x27|[^\s,;}{<>]+)"
+    r"(?im)(\b[\w.-]{0,64}(?:api[_ -]?key|client[_ -]?secret|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token)"
+    r"|\bpassword|\bpasswd|\bpwd|密码)([ \t]*[\x22\x27]?[ \t]*[:=][ \t]*)(\x22[^\x22\r\n]*\x22|\x27[^\x27\r\n]*\x27|[^\s,;}{<>]+)"
 )
 PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
@@ -146,8 +146,14 @@ def source_path(meta):
     staged = meta.get("file_path") or meta.get("source_path") or meta.get("path")
     if not staged:
         return None
+    path = Path(staged)
+    if not path.is_relative_to(DATA):
+        for index, part in enumerate(path.parts):
+            if part == "sources" and index + 1 < len(path.parts) and path.parts[index + 1] in SOURCES:
+                path = DATA.joinpath(*path.parts[index:])
+                break
     try:
-        key = str(Path(staged).relative_to(DATA))
+        key = str(path.relative_to(DATA))
         manifest = json.loads((DATA / "sources.json").read_text())
         return clean(manifest.get(key, {}).get("source") or staged)
     except (ValueError, FileNotFoundError):
@@ -201,17 +207,18 @@ def source_status():
             results[agent] = {"status": "没接入"}
         else:
             status = "已索引"
+            indexed_at = item.get("indexedAt") or coverage.get("completedAt")
             if not item.get("found"):
                 status = "没接入"
-            elif item.get("failed") or item.get("skippedLines") or item.get("parserFailed") or item.get("missing"):
+            elif any(item.get(key) for key in ("failed", "skippedLines", "parserFailed", "missing", "syncIncomplete")):
                 status = "内容不全"
-            elif not coverage.get("completedAt"):
+            elif coverage.get("updatingSince") or not indexed_at:
                 status = "索引旧"
             else:
-                synced = datetime.fromisoformat(coverage["completedAt"])
+                synced = datetime.fromisoformat(indexed_at)
                 if (datetime.now(timezone.utc) - synced).total_seconds() > 3600:
                     status = "索引旧"
-            results[agent] = {"status": status, "indexed_at": coverage.get("completedAt"), **item}
+            results[agent] = {"status": status, "indexed_at": indexed_at, **item}
     return results
 
 
@@ -464,8 +471,9 @@ def summarize_session(db, session_id, force=False):
     session = read_session(session_id, limit=100, all_pages=True)
     messages = session["messages"]
     revision = stable(session["revision"] + json_text(messages))
+    review_revision = "2:" + revision
     previous = db.execute("SELECT revision FROM reviewed WHERE session_id=?", (session_id,)).fetchone()
-    if previous and previous["revision"] == revision and not force:
+    if previous and previous["revision"] == review_revision and not force:
         return {"status": "unchanged", "session_id": session_id}
     correction = db.execute("SELECT projects FROM corrections WHERE session_id=?", (session_id,)).fetchone()
     corrected = json.loads(correction["projects"]) if correction else []
@@ -491,6 +499,9 @@ def summarize_session(db, session_id, force=False):
         for row in batch:
             evidence[row["ordinal"]] = row
         for entry in entries:
+            if not isinstance(entry, dict) or any(not isinstance(entry.get(key), str) or not entry[key].strip()
+                                                   for key in ("name", "reason", "summary")):
+                continue
             ordinal = entry.get("ordinal")
             if type(ordinal) is not int or ordinal not in evidence or not entry.get("summary") or not entry.get("reason"):
                 continue
@@ -498,7 +509,8 @@ def summarize_session(db, session_id, force=False):
                        "ordinal": ordinal, "evidence_time": evidence[ordinal].get("time")}
             for kind in ARRAYS:
                 payload[kind] = []
-                for item in entry.get(kind, []):
+                items = entry.get(kind)
+                for item in items if isinstance(items, list) else []:
                     try:
                         payload[kind].append(valid_item(item, kind, evidence))
                     except (ValueError, TypeError, KeyError):
@@ -521,7 +533,7 @@ def summarize_session(db, session_id, force=False):
             db.execute("INSERT INTO work VALUES(?,?,?,?,?,?,?)",
                        (key, pid, "summary", payload["evidence_time"] or session["time"] or now(),
                         session["source"], session_id, json_text(payload)))
-        db.execute("INSERT OR REPLACE INTO reviewed VALUES(?,?,?)", (session_id, revision, now()))
+        db.execute("INSERT OR REPLACE INTO reviewed VALUES(?,?,?)", (session_id, review_revision, now()))
         db.execute("DELETE FROM summary_chunks WHERE session_id=? AND revision<>?", (session_id, revision))
         for pid in list(affected):
             if not db.execute("SELECT 1 FROM work WHERE project_id=?", (pid,)).fetchone():
@@ -538,28 +550,33 @@ def summarize_session(db, session_id, force=False):
             "messages": len(messages), "records": len(results), "new_projects": new_projects}
 
 
+def history_sessions(agent):
+    cursor = None
+    while True:
+        flags = ["session", "list", "--agent", agent, "--include-children", "--include-one-shot",
+                 "--include-automated", "--limit", 100]
+        if cursor:
+            flags.extend(["--cursor", cursor])
+        page = archive(*flags)
+        yield from page["sessions"]
+        if not (cursor := page.get("next_cursor")):
+            return
+
+
 def backfill(db, agents, limit, force):
     completed = 0
     for agent in agents:
-        cursor = None
-        while True:
-            flags = ["session", "list", "--agent", agent, "--include-children", "--include-one-shot",
-                     "--include-automated", "--limit", 100]
-            if cursor:
-                flags.extend(["--cursor", cursor])
-            page = archive(*flags)
-            for row in page["sessions"]:
-                if limit and completed >= limit:
-                    return
-                sid = row["id"]
-                try:
-                    result = summarize_session(db, sid, force=force)
-                except Exception as exc:
-                    result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__}
-                print(json_text(result), flush=True)
+        for row in history_sessions(agent):
+            if limit and completed >= limit:
+                return
+            sid = row["id"]
+            try:
+                result = summarize_session(db, sid, force=force)
+            except (ValueError, RuntimeError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
+                result = {"status": "failed", "session_id": sid, "error_type": type(exc).__name__}
+            print(json_text(result), flush=True)
+            if result["status"] != "unchanged":
                 completed += 1
-            if not (cursor := page.get("next_cursor")):
-                break
 
 
 ITEM = {"type": "object", "properties": {"topic": {"type": "string"}, "text": {"type": "string"},
