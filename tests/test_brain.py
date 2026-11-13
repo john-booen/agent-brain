@@ -43,10 +43,47 @@ class BrainTest(unittest.TestCase):
             brain.log_work(self.db, "Fictional Atlas", "New plan", "cowork", work_id="second",
                            conclusions=[{"topic": "date", "text": "Monday"}])
         card = brain.call_tool(self.db, "get_project", {"project": "Fictional Atlas"})["card"]
-        self.assertIn("Monday", card.split("## 时间线")[0])
-        self.assertIn("Friday", card.split("## 已更新的旧结论")[1])
-        self.assertIn("已更新", card)
+        self.assertIn("Monday", card)
+        self.assertNotIn("Friday", card)
+        history = brain.call_tool(self.db, "get_project", {"project": "Fictional Atlas", "section": "history"})["card"]
+        self.assertIn("Friday", history)
+        self.assertIn("已更新", history)
         self.assertTrue((brain.DATA / "_index.md").is_file())
+
+    def test_lookup_and_short_card_share_budget_and_history_pages(self):
+        work = brain.log_work(self.db, "Fictional Atlas", "完成了可交付材料" * 100, "codex",
+                              conclusions=[{"text": "有效结论" * 250}],
+                              files=[{"path": "/tmp/final.docx", "status": "已交付"}],
+                              todos=[{"text": "补证据"}])
+        self.db.execute("INSERT INTO project_aliases VALUES(?,?)", ("Atlas delivery", work["project_id"]))
+        lookup = brain.call_tool(self.db, "find_project", {"query": "Atlas delivery"})
+        self.assertEqual(lookup["projects"][0]["id"], work["project_id"])
+        brief = brain.call_tool(self.db, "get_project", {"project": "Atlas delivery"})
+        self.assertIn("final.docx", brief["card"])
+        self.assertIn("补证据", brief["card"])
+        self.assertLessEqual(brain.response_size(lookup) + brain.response_size(brief), brain.QUERY_BYTES)
+        args = {"project": work["project_id"], "section": "conclusions"}
+        page = brain.call_tool(self.db, "get_project", args)
+        self.assertIsNotNone(page["next_offset"])
+        second = brain.call_tool(self.db, "get_project", {**args, "offset": page["next_offset"]})
+        self.assertTrue(second["card"])
+        self.assertLessEqual(brain.response_size(page), brain.QUERY_BYTES)
+        self.assertLessEqual(brain.response_size(second), brain.QUERY_BYTES)
+
+    def test_transcript_excerpts_resume_within_an_oversize_message(self):
+        original = '\\"\n多字' * 600
+        session = {"session_id": "cowork:test", "path": None, "next_from": None, "status": "ok",
+                   "messages": [{"ordinal": 17, "text": original}]}
+        with patch.object(brain, "read_session", side_effect=lambda *a, **kw: {**session}):
+            args = {"session_id": "cowork:test", "around": 17}
+            first = brain.call_tool(self.db, "get_session", args)
+            offset = first["next_text_offset"]
+            second = brain.call_tool(self.db, "get_session", {"session_id": "cowork:test", "start": 17, "text_offset": offset})
+        self.assertEqual(first["next_from"], 17)
+        self.assertEqual(first["messages"][0]["text"], original[:offset])
+        self.assertTrue(original[offset:].startswith(second["messages"][0]["text"]))
+        for page in (first, second):
+            self.assertLessEqual(brain.response_size(page), brain.QUERY_BYTES)
 
     def test_model_uses_evidence_and_caches_revision(self):
         session = {"messages": [{"ordinal": 1, "text": "Delivered /tmp/fictional.md", "time": "2030-01-01T00:00:00Z"}],

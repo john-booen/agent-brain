@@ -9,6 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 const data = resolve(process.env.AGENT_BRAIN_DATA || join(homedir(), 'SharedBrain'));
 const program = process.env.AGENTSVIEW_BIN || 'agentsview';
 const zstdProgram = process.env.ZSTD_BIN || 'zstd';
+const useDaemon = process.env.AGENT_BRAIN_SYNC_DAEMON === '1';
 const stagingVersion = 3;
 const roots = {
   codex: ['.codex/sessions', '.codex/archived_sessions'],
@@ -121,6 +122,7 @@ async function main() {
 async function collect() {
   const archive = join(data, 'agentsview');
   const manifestPath = join(data, 'sources.json');
+  const configPath = join(archive, 'config.toml');
   const sources = {};
   const startedAt = new Date().toISOString();
   const priorReport = await fs.readFile(join(data, 'coverage.json'), 'utf8').then(JSON.parse).catch(error => {
@@ -149,12 +151,31 @@ async function collect() {
       sources[agent].push(dest);
       if (!active) continue;
       await fs.mkdir(dest, { recursive: true, mode: 0o700 });
+      const indexedFiles = agent === 'cowork' && new Set(entries.filter(entry => entry.isFile())
+        .map(entry => join(entry.parentPath, entry.name)));
+      const indexedDirs = agent === 'cowork' && new Set(entries.filter(entry => entry.isDirectory())
+        .map(entry => join(entry.parentPath, entry.name)));
       for (const entry of entries) {
         if (!entry.isFile() || !filenames[agent].test(entry.name)) continue;
         stats.found++;
         const source = join(entry.parentPath, entry.name);
         const filename = relative(root, source).replace(/\.zstd$/, '');
         jobs.push({ source, target: join(dest, filename), stats });
+        // Newer Cowork builds store transcripts under a short session folder.
+        // AgentsView v0.47 discovers them under the full local session ID.
+        const meta = agent === 'cowork' && /^local_([a-f0-9]{8})(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.exec(entry.name);
+        if (!meta) continue;
+        const fullId = entry.name.slice(0, -5);
+        const transcriptDir = join(entry.parentPath, meta[1], '.claude', 'projects', 'session');
+        if (!indexedDirs.has(transcriptDir)) continue;
+        const { cliSessionId } = await fs.readFile(source, 'utf8').then(JSON.parse).catch(() => ({}));
+        if (typeof cliSessionId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(cliSessionId)) continue;
+        const transcript = join(transcriptDir, cliSessionId + '.jsonl');
+        if (!indexedFiles.has(transcript)) continue;
+        const legacyProjects = join(entry.parentPath, fullId, '.claude', 'projects') + sep;
+        if ([...indexedFiles].some(path => path.startsWith(legacyProjects) && path.endsWith(sep + cliSessionId + '.jsonl'))) continue;
+        const alias = join(dest, relative(root, entry.parentPath), fullId, '.claude', 'projects', 'session', cliSessionId + '.jsonl');
+        jobs.push({ source: transcript, target: alias, stats });
       }
     }
   }
@@ -213,16 +234,29 @@ async function collect() {
   for await (const part of catalog.child.stdout) output += part;
   if (await catalog.exit) throw new Error('AgentsView source list failed');
   const disabled = JSON.parse(output).agents.filter(item => !item.import_only && !roots[item.type]).map(item => item.type);
+  const previousConfig = await fs.readFile(configPath, 'utf8').catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return '';
+  });
+  const authConfig = previousConfig.split(/^\s*\[/m, 1)[0].split('\n')
+    .filter(line => /^(?:auth_token|cursor_secret)\s*=/.test(line));
   const config = [
     'archive_content = "transcripts"',
     'disable_update_check = true',
     'tool_result_images = "drop"',
     'disabled_agents = ' + JSON.stringify(disabled),
+    ...authConfig,
   ];
   for (const [agent, dirs] of Object.entries(sources)) {
     config.push('', '[agents.' + agent + ']', 'dirs = ' + JSON.stringify(dirs));
   }
-  await writeAtomic(join(archive, 'config.toml'), config.join('\n') + '\n');
+  const nextConfig = config.join('\n') + '\n';
+  if (previousConfig !== nextConfig) await writeAtomic(configPath, nextConfig);
+  if (useDaemon) {
+    const start = launch(program, ['serve', '--background', '--no-browser', '--no-sync', '--no-update-check',
+      '--require-auth', '--host', '127.0.0.1', '--port', '0'], { env, stdio: ['ignore', 'ignore', 'ignore'] });
+    if (await start.exit) throw new Error('AgentsView local query service failed to start');
+  }
   await writeAtomic(join(data, 'coverage.json'), JSON.stringify({ ...priorReport, updatingSince: startedAt }, null, 2));
   const sync = launch(program, ['source', 'sync'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
   report.exit = await sync.exit;

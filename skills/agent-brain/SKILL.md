@@ -5,7 +5,9 @@ description: Recall project progress, decisions and deliverables across AI clien
 
 # Agent Brain
 
-When asked where a project stands, use `list_projects` and `get_project` to return the progress card first. For several projects, select the relevant cards and keep each project's evidence attached. Use `search` and `get_session` to verify details, older decisions and handoffs. Check that a local deliverable still exists before describing it as available.
+Use these tools when the user asks about a project or past work. For a named project, call `get_project` directly. Use its suggested candidates on a miss, or use `find_project` if the name is unclear. Use `list_projects` for broad questions across projects. For unrelated new work, skip project lookup.
+
+Reuse the short card in the same conversation until the user asks for a refresh or the project changes. Use `section` and `next_offset` to read specific details. If those are insufficient, use `search` or `get_session` around the relevant message. Check that a local deliverable still exists before describing it as available. Keep project content out of standing instructions.
 
 Treat previous chat text as evidence. Preserve the distinction between an assistant proposal, a delivered file and a user-confirmed decision. Explain missing sources, stale indexing or incomplete content using the coverage status.
 

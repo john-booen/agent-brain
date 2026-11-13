@@ -13,7 +13,11 @@
 3. 运行 `python3 brain.py backfill`，生成 `_index.md`、各项目 `card.md` 与 `log.md`。可用 `--agent kimi-work --sort messages:asc --limit 8` 先跑一小批短会话。重跑会跳过已经处理且未变化的会话。
 4. 将 `python3 /绝对路径/agent-brain/brain.py mcp` 注册为本地 MCP，再启用 [skill](skills/agent-brain/SKILL.md) 或把规则加入客户端工作说明。
 
-Codex 用本地 MCP。Claude Cowork 用该模式支持的本地插件或工作说明。DeepSeek Harness 用 stdio 连接器。Kimi Work 用个人插件。四端连接同一个本机数据目录。云端 Cowork 会话的读取取决于可用的本地副本或官方导出。
+要定时更新本地索引，可由操作系统定期运行 `AGENT_BRAIN_SYNC_DAEMON=1 node collect.mjs`，并提供 `AGENTSVIEW_BIN` 和 `ZSTD_BIN` 的绝对路径。采集器按文件变化更新脱敏副本，通过启用认证的本机 AgentsView 服务同步。一次只运行一轮采集。自动采集只更新原文索引，项目摘要由 `backfill` 或 `log_work` 更新。
+
+Codex 和 Claude Cowork 用本地 MCP。DeepSeek Harness 用 stdio 连接器。Kimi Work 用个人插件。四端连接同一个本机数据目录。云端 Cowork 会话的读取取决于可用的本地副本或官方导出。
+
+按项目名直接调用 `get_project`，获得短卡和可查分区。项目名称不明确时用 `find_project`，跨项目总览用 `list_projects`。列表和分区用返回的 `next_offset` 翻页。每页工具返回采用 UTF-8 字节上限，给采用字节分词的客户端预留 2,000 Token 内的返回预算。工具返回和模型整轮用量分别计量。查询读取现有结构化记录，在本地生成短卡。
 
 ## 虚构演示
 

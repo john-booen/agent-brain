@@ -20,7 +20,9 @@ Use Python 3.11+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https:
 - DeepSeek Harness: import the command as a local stdio connector and add the skill instructions to the working agent.
 - Kimi Work: register a personal plugin with the local stdio server and the skill.
 
-The tools are `list_projects`, `get_project`, `search`, `get_session`, and `log_work`. They share the same archive across clients. History coverage depends on the local source, especially for cloud Cowork tasks. [AgentsView source documentation](https://www.agentsview.io/docs/configuration/#session-discovery)
+Use `get_project` for a named project, `find_project` for an unclear name, and `list_projects` for a cross-project overview. `get_project` builds a short card locally from existing records. Use `section` and `next_offset` for more detail, and `search` or `get_session` for specific evidence. Response pages use a UTF-8 byte limit to keep tool text within the 2,000-token budget for byte-based tokenizers. Model turn usage is measured separately. All clients share the same archive. History coverage depends on the local source, especially for cloud Cowork tasks. [AgentsView source documentation](https://www.agentsview.io/docs/configuration/#session-discovery)
+
+To keep the local index up to date, run `AGENT_BRAIN_SYNC_DAEMON=1 node collect.mjs` periodically with your operating system's scheduler. Set `AGENTSVIEW_BIN` and `ZSTD_BIN` to their absolute paths. The collector updates changed redacted copies through the authenticated local AgentsView service and allows one collection run at a time. Collection updates transcript search. Run `backfill` or use `log_work` to update project summaries.
 
 ## Fictional demo
 
