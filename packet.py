@@ -10,7 +10,7 @@ from pathlib import Path
 import file_text
 
 
-VERSION = 15
+VERSION = 17
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -141,9 +141,9 @@ def project_terms(name):
     return {term for term in terms if term not in {'项目', '方案', '研究', '活动', '工作', '进展', '问题', '整理', '共享', 'word', 'pdf'}}
 
 
-def matches_project(value, terms):
+def matches_project(value, terms, loose=True):
     value = value.casefold()
-    return any(term in value or (len(term) == 4 and term[:3] in value) for term in terms)
+    return any(term in value or (loose and len(term) == 4 and term[:3] in value) for term in terms)
 
 
 def same_task_name(name):
@@ -346,7 +346,7 @@ def finish_entries(inputs, deliveries, rules, approvals):
             'rules': current[:10], 'history': history}
 
 
-def build(rows, versions, index, visible, clean, names):
+def build(rows, versions, index, visible, clean, names, project_terms_by_session):
     inputs, deliveries, rules, approvals = [], [], [], []
     sessions = defaultdict(list)
     delivery_by_name = defaultdict(set)
@@ -453,6 +453,12 @@ def build(rows, versions, index, visible, clean, names):
                 continue
             user_has_project = True
             task_anchor = matches_project(text, terms)
+            competing_project = any(matches_project(Path(path).name, other, loose=False) for path in path_matches
+                                    for other in project_terms_by_session.get(sid, []) if other)
+            if not focused and competing_project and not any(matches_project(Path(path).name, terms, loose=False) for path in path_matches):
+                task_ordinal = -100
+                user_has_project = False
+                continue
             if task_anchor:
                 task_ordinal = ordinal
             accepted = APPROVAL.search(text.strip()) or re.match(r'^(?:好的|可以|没问题)[，,。！! ]+.{0,50}(?:用|做|编辑|出|改成|定)', text)
@@ -516,7 +522,15 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
                                                                      ensure_ascii=False).encode()).hexdigest()
         if previous and previous['signature'] == signature and not force:
             return json.loads(previous['data']), False
-        result = build(rows, versions, index, visible, clean, names)
+        alternatives = defaultdict(list)
+        own_terms = set().union(*(project_terms(name) for name in names))
+        for sid in sessions:
+            for row in db.execute('SELECT DISTINCT p.name FROM work w JOIN projects p ON p.id=w.project_id '
+                                  'WHERE w.session_id=? AND w.project_id<>?', (sid, project_id)):
+                terms = project_terms(row[0]) - own_terms
+                if terms:
+                    alternatives[sid].append(terms)
+        result = build(rows, versions, index, visible, clean, names, alternatives)
         for key in ('inputs', 'deliverables', 'history'):
             paths = set()
             items = []
