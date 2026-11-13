@@ -28,6 +28,8 @@ class BrainTest(unittest.TestCase):
         self.assertEqual(brain.visible({"role": "assistant", "content": "hidden", "dialogue_text": ""}), "")
         result = brain.visible({"role": "user", "content": '<meta time="1" />\n密码 = "fake with spaces"'})
         self.assertEqual(result, "密码 = [REDACTED]")
+        notice = 'Skill tool loaded instructions for this request. Follow them.\n<skill-loaded name="example">Hidden</skill-loaded>'
+        self.assertEqual(brain.visible({"role": "user", "content": notice}), "")
 
     def test_retry_and_current_conclusion(self):
         first = brain.log_work(self.db, "Fictional Atlas", "First draft", "codex", work_id="first",
@@ -65,8 +67,8 @@ class BrainTest(unittest.TestCase):
     def test_reconcile_two_names_for_the_same_project(self):
         payload = {"reason": "Both messages discuss the same release."}
         results = [(0, "Fictional Atlas", payload), (1, "Atlas release checklist", payload)]
-        mapping = {"Fictional Atlas": "Fictional Atlas", "Atlas release checklist": "Fictional Atlas"}
-        with patch.object(brain, "model", return_value={"mapping": mapping}):
+        with patch.object(brain, "model", side_effect=[{"groups": [{"name": "Fictional Atlas", "indices": [0]}]},
+                                                       {"groups": [{"name": "Fictional Atlas", "indices": [0, 1]}]}]):
             reconciled = brain.reconcile_projects(results, [], [])
         self.assertEqual(reconciled, [(0, "Fictional Atlas", payload), (1, "Fictional Atlas", payload)])
 

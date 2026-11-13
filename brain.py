@@ -31,7 +31,8 @@ PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{10,}={0,2}"),
 )
 VISIBLE_BLOCK = re.compile(r"(?ms)^\[(Thinking|Tool result|Tool output)\]\s*.*?^\[/\1\][ \t]*\n?")
-INJECTED = re.compile(r"(?is)^\s*<(meta|plugin-instructions|environment_context|system-reminder)(?:\s[^>]*?)?(?:\s*/>|>.*?</\1>)\s*")
+INJECTED = re.compile(r"(?is)^\s*<(meta|plugin-instructions|environment_context|system-reminder|skill-loaded)(?:\s[^>]*?)?(?:\s*/>|>.*?</\1>)\s*")
+SKILL_NOTICE = re.compile(r"(?is)^\s*Skill tool loaded instructions for this request\. Follow them\.\s*<skill-loaded\b")
 TOOL_ONLY = re.compile(r"(?i)^\s*\[(?:tool(?::[^\]]*)?|bash|read|write|edit|grep|glob|task|readmediafile)\]\s*$")
 
 
@@ -67,6 +68,8 @@ def visible(row):
     if row.get("role") == "user":
         while (trimmed := INJECTED.sub("", text, count=1)) != text:
             text = trimmed
+        if SKILL_NOTICE.match(text):
+            return ""
     return clean(text.strip())
 
 
@@ -126,7 +129,13 @@ def connect():
 
 
 def archive_env():
-    return {**os.environ, "AGENTSVIEW_DATA_DIR": str((DATA / "agentsview").resolve()), "AGENTSVIEW_TELEMETRY_ENABLED": "0"}
+    env = {**os.environ, "AGENTSVIEW_DATA_DIR": str((DATA / "agentsview").resolve()),
+           "AGENTSVIEW_TELEMETRY_ENABLED": "0", "AGENTSVIEW_NO_DAEMON": "1"}
+    for name in ("AGENTSVIEW_AUTH_TOKEN", "AGENTSVIEW_AUTH_TOKEN_FILE", "AGENTSVIEW_PUBLIC_ORIGIN",
+                 "AGENTSVIEW_MODE", "AGENTSVIEW_HOST", "CODEX_SESSIONS_DIR", "COWORK_DIR",
+                 "KIMI_WORK_DIR", "DEEPSEEK_HARNESS_SESSIONS_DIR", "DSH_HOME"):
+        env.pop(name, None)
+    return env
 
 
 def archive(*args):
@@ -135,8 +144,17 @@ def archive(*args):
     bin_path = os.environ.get("AGENTSVIEW_BIN") or config().get("agentsview_bin", "agentsview")
     argv = list(map(str, args))
     argv.insert(argv.index("--") if "--" in argv else len(argv), "--json")
-    result = subprocess.run([bin_path, *argv], env=archive_env(),
+    env = archive_env()
+    result = subprocess.run([bin_path, *argv], env=env,
                             capture_output=True, text=True, timeout=150)
+    if result.returncode:
+        status = subprocess.run([bin_path, "daemon", "status"], env=env, capture_output=True, timeout=10)
+        if status.returncode and not (DATA / ".collect.lock").exists():
+            started = subprocess.run([bin_path, "serve", "--background", "--no-browser", "--no-sync",
+                                      "--no-update-check", "--require-auth", "--host", "127.0.0.1", "--port", "0"],
+                                     env=env, capture_output=True, timeout=20)
+            if started.returncode == 0:
+                result = subprocess.run([bin_path, *argv], env=env, capture_output=True, text=True, timeout=150)
     if result.returncode:
         raise RuntimeError("AgentsView " + " ".join(args[:2]) + " failed. Check the local archive and daemon.")
     return json.loads(result.stdout)
@@ -451,19 +469,43 @@ def reconcile_projects(results, catalog, corrected):
     if len(names) < 2 and not corrected:
         return results
     evidence = [
-        {"name": name, "reason": next(data["reason"] for _, n, data in results if n == name)}
-        for name in names
+        {"index": index, "name": name,
+         "context": [{"reason": data["reason"], "summary": data.get("summary", "")[:280]}
+                     for _, n, data in results if n == name][:2]}
+        for index, name in enumerate(names)
     ]
-    decision = model([
-        {"role": "system", "content": "判断同一会话的候选名称哪些在讲同一个项目。不要按阶段、材料、子任务分开。同一活动的筹备和文档归同一项目。不同项目保留。优先使用已有项目名，用户纠正的名称必须优先。只返回 JSON {\"mapping\":{\"候选原名\":\"项目正式名\"}}。"},
-        {"role": "user", "content": json_text({"candidates": evidence, "projects": catalog,
-                                               "confirmed_projects": corrected})},
-    ])
-    mapping = decision.get("mapping")
-    if not isinstance(mapping, dict) or any(not isinstance(mapping.get(name), str) or not mapping[name].strip() for name in names):
+    if len(corrected) == 1:
+        return [(part, corrected[0], payload) for part, _, payload in results]
+    instruction = ("把同一会话的候选条目按它们实际推进的项目分组。先判断是否有不同的最终目标或交付对象，"
+                   "同一个合作方和活动的筹备、函件、版本和执行通常只是一件事。"
+                   "像‘文档整理’这种工作类型沿用其实际服务的项目名。优先使用匹配的已有项目名。"
+                   "只返回 JSON {\"groups\":[{\"name\":\"项目名\",\"indices\":[0,1]}]}。"
+                   f"每个 0 到 {len(names) - 1} 的索引必须恰好出现一次。"
+                   "confirmed_projects 非空时只能使用其中的名称。")
+    for _ in range(2):
+        decision = model([
+            {"role": "system", "content": instruction},
+            {"role": "user", "content": json_text({"candidates": evidence, "projects": catalog,
+                                                   "confirmed_projects": corrected})},
+        ])
+        groups = decision.get("groups") if isinstance(decision, dict) else None
+        assignments = []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                break
+            name, indices = group.get("name"), group.get("indices")
+            if (not isinstance(name, str) or not name.strip() or not isinstance(indices, list)
+                    or (corrected and name not in corrected)
+                    or any(type(index) is not int for index in indices)):
+                break
+            assignments.extend((index, name) for index in indices)
+        else:
+            if sorted(index for index, _ in assignments) == list(range(len(names))):
+                mapping = {names[index]: name for index, name in assignments}
+                break
+        instruction += " 检查各组索引的并集及重复项。"
+    else:
         raise ValueError("Incomplete project reconciliation")
-    if corrected and any(mapping[name] not in corrected for name in names):
-        raise ValueError("Model did not follow the corrected project assignments")
     return [(part, mapping[name], payload) for part, name, payload in results]
 
 
@@ -471,7 +513,7 @@ def summarize_session(db, session_id, force=False):
     session = read_session(session_id, limit=100, all_pages=True)
     messages = session["messages"]
     revision = stable(session["revision"] + json_text(messages))
-    review_revision = "2:" + revision
+    review_revision = "3:" + revision
     previous = db.execute("SELECT revision FROM reviewed WHERE session_id=?", (session_id,)).fetchone()
     if previous and previous["revision"] == review_revision and not force:
         return {"status": "unchanged", "session_id": session_id}
@@ -547,7 +589,8 @@ def summarize_session(db, session_id, force=False):
         db.rollback()
         raise
     return {"status": "内容不全" if not messages else "ok", "session_id": session_id,
-            "messages": len(messages), "records": len(results), "new_projects": new_projects}
+            "messages": len(messages), "records": len(results), "project_count": len(affected),
+            "new_projects": new_projects}
 
 
 def history_sessions(agent):

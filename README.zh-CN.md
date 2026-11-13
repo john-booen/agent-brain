@@ -9,7 +9,7 @@
 需要 Python 3.11+、Node.js 22+、Zstandard、[AgentsView v0.47.0](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0) 命令行程序，以及用于摘要的 OpenAI 兼容模型。默认数据目录是 `~/SharedBrain`，也可通过 `AGENT_BRAIN_DATA` 指定仓库之外的目录。
 
 1. 将 `examples/config.example.json` 复制为数据目录下的 `config.json`，填入模型地址与模型名。
-2. 若 AgentsView 不在 PATH，设置 `AGENTSVIEW_BIN`。采集前停止这个档案的 AgentsView 服务，然后运行 `node collect.mjs`。
+2. 若 AgentsView 不在 PATH，设置 `AGENTSVIEW_BIN`。采集前停止这个档案的 AgentsView 服务，然后运行 `node collect.mjs`。如只需更新指定来源，可以传入来源名，例如 `node collect.mjs kimi-work cowork`。查询时会按需启动启用认证的本机回环服务。
 3. 运行 `python3 brain.py backfill`，生成 `_index.md`、各项目 `card.md` 与 `log.md`。可用 `--limit N` 先处理一批。
 4. 将 `python3 /绝对路径/agent-brain/brain.py mcp` 注册为本地 MCP，再启用 [skill](skills/agent-brain/SKILL.md) 或把规则加入客户端工作说明。
 

@@ -9,7 +9,7 @@ Agent Brain gives local AI clients the same project progress cards and work log.
 Use Python 3.11+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0). A standalone local OpenAI-compatible model is useful for history backfill. Set `AGENT_BRAIN_DATA` to a directory outside the repository if you prefer a location other than `~/SharedBrain`.
 
 1. Copy `examples/config.example.json` to the data directory as `config.json` and set the model URL and ID. Keep model credentials in an environment variable if your endpoint needs them.
-2. Set `AGENTSVIEW_BIN` if the binary is outside your PATH. Run `node collect.mjs` to prepare redacted input and update the AgentsView index. Stop the AgentsView daemon for this archive before running the collector.
+2. Set `AGENTSVIEW_BIN` if the binary is outside your PATH. Stop the AgentsView daemon for this archive, then run `node collect.mjs` to prepare redacted input and update the index. To refresh selected inputs, pass source names, for example `node collect.mjs kimi-work cowork`. Agent Brain starts an authenticated loopback query service when needed.
 3. Run `python3 brain.py backfill` to summarize historical sessions and generate `_index.md`, `card.md` and `log.md` in the data directory. Add `--limit N` to process a small initial batch. Repeated runs skip completed unchanged sessions.
 4. Connect each client to the stdio command `python3 /absolute/path/to/agent-brain/brain.py mcp`, with the same `AGENT_BRAIN_DATA`. Add [the skill](skills/agent-brain/SKILL.md) or copy its instructions into the client.
 

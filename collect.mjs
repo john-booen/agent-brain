@@ -205,7 +205,9 @@ async function collect() {
   await Promise.all(Array.from({ length: 4 }, worker));
   await writeAtomic(manifestPath, JSON.stringify(manifest));
   const env = { ...process.env, AGENTSVIEW_DATA_DIR: archive, AGENTSVIEW_TELEMETRY_ENABLED: '0', AGENTSVIEW_NO_DAEMON: '1' };
-  for (const name of ['CODEX_SESSIONS_DIR', 'COWORK_DIR', 'KIMI_WORK_DIR', 'DEEPSEEK_HARNESS_SESSIONS_DIR']) delete env[name];
+  for (const name of ['AGENTSVIEW_AUTH_TOKEN', 'AGENTSVIEW_AUTH_TOKEN_FILE', 'AGENTSVIEW_PUBLIC_ORIGIN',
+    'AGENTSVIEW_MODE', 'AGENTSVIEW_HOST', 'CODEX_SESSIONS_DIR', 'COWORK_DIR', 'KIMI_WORK_DIR',
+    'DEEPSEEK_HARNESS_SESSIONS_DIR', 'DSH_HOME']) delete env[name];
   const catalog = launch(program, ['source', 'list', '--json'], { env, stdio: ['ignore', 'pipe', 'inherit'] });
   let output = '';
   for await (const part of catalog.child.stdout) output += part;
