@@ -48,7 +48,7 @@ def report(db, directory):
             for source, files in transcript_coverage(index, directory).items():
                 status = sources.setdefault(source, {})
                 status.update(files)
-                if files['transcripts_without_index']:
+                if files.get('transcripts_without_index'):
                     status['incomplete'] = True
     indexed = db.execute("""SELECT COUNT(DISTINCT session_id) FROM work w WHERE kind='summary' AND session_id IS NOT NULL
                          AND NOT EXISTS (SELECT 1 FROM packet_extractions e WHERE e.session_id=w.session_id)""").fetchone()[0]
@@ -76,12 +76,18 @@ def transcript_coverage(index, directory):
         if agent == 'codex':
             codex_ids.add(sid.removeprefix('codex:'))
     by_source = {}
+    kimi_auxiliary = set()
     for staged, item in manifest.items():
         key = Path(staged)
         if len(key.parts) < 4 or key.parts[0] != 'sources' or key.suffix not in {'.jsonl', '.zst'} or key.name == 'audit.jsonl':
             continue
         source = key.parts[1]
         original = item['source']
+        if (source == 'kimi-work' and len(key.parts) >= 6 and key.name == 'wire.jsonl'
+                and key.parts[4].startswith(('ctitle-', 'sklsum-', 'dvlt-'))):
+            if Path(original).is_file():
+                kimi_auxiliary.add(original)
+            continue
         match = CODEX_ID.search(key.name) if source == 'codex' else None
         present = staged in indexed or original in indexed or bool(match and match[1] in codex_ids)
         originals = by_source.setdefault(source, {})
@@ -93,6 +99,8 @@ def transcript_coverage(index, directory):
         result[source] = {'transcripts_matched_to_index': len(found) - len(gaps),
                           'transcripts_without_index': unresolved,
                           'unmatched_originals_no_longer_on_disk': len(gaps) - unresolved}
+    if kimi_auxiliary:
+        result.setdefault('kimi-work', {})['excluded_auxiliary_logs'] = len(kimi_auxiliary)
     return result
 
 

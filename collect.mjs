@@ -16,6 +16,9 @@ const coveragePath = join(data, 'coverage.json');
 const todoPath = process.env.AGENT_BRAIN_USER_TODO || join(data, 'USER_TODO.md');
 const refreshAlert = '<!-- agent-brain-packet-refresh -->';
 const stagingVersion = 3;
+const uuid = '[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}';
+const coworkMetaName = new RegExp('^local_(' + uuid + ')\\.json$');
+const coworkTranscriptName = new RegExp('^(' + uuid + ')\\.jsonl$');
 const roots = {
   codex: ['.codex/sessions', '.codex/archived_sessions'],
   cowork: ['Library/Application Support/Claude/local-agent-mode-sessions', 'Library/Application Support/Claude-3p/local-agent-mode-sessions'],
@@ -222,31 +225,70 @@ async function collect() {
       sources[agent].push(dest);
       if (!active) continue;
       await fs.mkdir(dest, { recursive: true, mode: 0o700 });
-      const indexedFiles = agent === 'cowork' && new Set(entries.filter(entry => entry.isFile())
-        .map(entry => join(entry.parentPath, entry.name)));
-      const indexedDirs = agent === 'cowork' && new Set(entries.filter(entry => entry.isDirectory())
-        .map(entry => join(entry.parentPath, entry.name)));
+      const transcripts = new Map();
+      if (agent === 'cowork') {
+        const marker = sep + '.claude' + sep + 'projects' + sep;
+        for (const entry of entries.filter(entry => entry.isFile() && entry.name.endsWith('.jsonl'))) {
+          const path = join(entry.parentPath, entry.name);
+          const offset = path.indexOf(marker, root.length);
+          if (offset < 0) continue;
+          const session = path.slice(0, offset);
+          if (!transcripts.has(session)) transcripts.set(session, []);
+          transcripts.get(session).push(path.slice(offset + marker.length));
+        }
+      }
       for (const entry of entries) {
         if (!entry.isFile() || !filenames[agent].test(entry.name)) continue;
-        stats.found++;
         const source = join(entry.parentPath, entry.name);
         const filename = relative(root, source).replace(/\.zstd$/, '');
+        stats.found++;
         jobs.push({ source, target: join(dest, filename), stats });
-        // Newer Cowork builds store transcripts under a short session folder.
-        // AgentsView v0.47 discovers them under the full local session ID.
-        const meta = agent === 'cowork' && /^local_([a-f0-9]{8})(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.exec(entry.name);
+        const meta = agent === 'cowork' && coworkMetaName.exec(entry.name);
         if (!meta) continue;
         const fullId = entry.name.slice(0, -5);
-        const transcriptDir = join(entry.parentPath, meta[1], '.claude', 'projects', 'session');
-        if (!indexedDirs.has(transcriptDir)) continue;
+        const shortId = meta[1].slice(0, 8);
+        const shortFolder = join(entry.parentPath, shortId);
+        const legacyFolder = join(entry.parentPath, fullId);
+        const files = transcripts.get(shortFolder);
+        if (!files) continue;
         const { cliSessionId } = await fs.readFile(source, 'utf8').then(JSON.parse).catch(() => ({}));
-        if (typeof cliSessionId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(cliSessionId)) continue;
-        const transcript = join(transcriptDir, cliSessionId + '.jsonl');
-        if (!indexedFiles.has(transcript)) continue;
-        const legacyProjects = join(entry.parentPath, fullId, '.claude', 'projects') + sep;
-        if ([...indexedFiles].some(path => path.startsWith(legacyProjects) && path.endsWith(sep + cliSessionId + '.jsonl'))) continue;
-        const alias = join(dest, relative(root, entry.parentPath), fullId, '.claude', 'projects', 'session', cliSessionId + '.jsonl');
-        jobs.push({ source: transcript, target: alias, stats });
+        if (typeof cliSessionId !== 'string' || !coworkTranscriptName.test(cliSessionId + '.jsonl')) continue;
+        const legacy = transcripts.get(legacyFolder) || [];
+        const projected = new Map();
+        for (const file of files.sort()) {
+          const parts = file.split(sep);
+          const id = parts.length === 2 && coworkTranscriptName.exec(parts[1])?.[1];
+          if (!id || projected.has(id)) continue;
+          projected.set(id, parts[0]);
+        }
+        for (const [id, encoded] of projected) {
+          const main = join(encoded, id + '.jsonl');
+          const existing = legacy.find(file => file.split(sep).length === 2 && file.endsWith(sep + id + '.jsonl'));
+          // Keep the index pointing to its existing alias across collector upgrades.
+          const previousAlias = join(dest, relative(root, entry.parentPath), fullId, '.claude', 'projects', 'session', id + '.jsonl');
+          const previousAliasSource = previous[relative(data, previousAlias)]?.source;
+          const useSessionAlias = existing?.startsWith('session' + sep) ||
+            previousAliasSource === join(shortFolder, '.claude', 'projects', main);
+          const folder = join(dest, relative(root, entry.parentPath));
+          // Cowork metadata only references the current CLI ID. Give older
+          // transcripts their own discovery entry while preserving the CLI IDs.
+          const base = id === cliSessionId ? join(folder, fullId) :
+            join(folder, 'additional-transcripts', meta[1], 'local_' + id);
+          if (id !== cliSessionId) jobs.push({ source, target: base + '.json', stats, cliSessionId: id });
+          const targetProject = existing ? dirname(existing) : useSessionAlias ? 'session' : encoded;
+          const targetDir = join(base, '.claude', 'projects', targetProject);
+          const originalDir = join(shortFolder, '.claude', 'projects');
+          if (id !== cliSessionId || !existing) {
+            jobs.push({ source: join(originalDir, main), target: join(targetDir, id + '.jsonl'), stats });
+          }
+          const subagents = join(encoded, id, 'subagents') + sep;
+          for (const file of files) {
+            if (!file.startsWith(subagents) || !/^agent-.+\.jsonl$/.test(file.split(sep).at(-1))) continue;
+            const relativeAgent = file.slice(encoded.length + 1);
+            if (id === cliSessionId && legacy.includes(join(dirname(existing || main), relativeAgent))) continue;
+            jobs.push({ source: join(originalDir, file), target: join(targetDir, relativeAgent), stats });
+          }
+        }
       }
     }
   }
@@ -257,11 +299,11 @@ async function collect() {
   async function worker() {
     while (position < jobs.length) {
       const index = position++;
-      const { source, target, stats } = jobs[index];
+      const { source, target, stats, cliSessionId } = jobs[index];
       const key = relative(data, target);
       try {
         const before = await fs.stat(source);
-        const fingerprint = [stagingVersion, before.size, before.mtimeMs, before.ino].join(':');
+        const fingerprint = [stagingVersion, before.size, before.mtimeMs, before.ino, ...(cliSessionId ? [cliSessionId] : [])].join(':');
         if (previous[key]?.fingerprint === fingerprint && await fs.stat(target).catch(() => null)) {
           manifest[key] = previous[key];
           stats.unchanged++;
@@ -271,7 +313,10 @@ async function collect() {
         const fileStats = { skippedLines: 0 };
         await fs.mkdir(dirname(target), { recursive: true, mode: 0o700 });
         if (source.endsWith('.json')) {
-          await fs.writeFile(target + '.tmp', JSON.stringify(scrub(JSON.parse(await fs.readFile(source, 'utf8')))), { mode: 0o600 });
+          const original = JSON.parse(await fs.readFile(source, 'utf8'));
+          const { title, userSelectedFolders } = original;
+          const content = cliSessionId ? { cliSessionId, title, userSelectedFolders } : original;
+          await fs.writeFile(target + '.tmp', JSON.stringify(scrub(content)), { mode: 0o600 });
         } else {
           await copyTranscript(source, target, fileStats);
         }

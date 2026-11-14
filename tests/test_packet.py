@@ -107,6 +107,37 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(report['fileRefresh']['status'], 'failed')
         self.assertIn('文件摘要可能过期', self.tool('get_project', project='Atlas')['coverage'])
 
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required to exercise the collector')
+    def test_collection_stages_cowork_short_folder_and_older_cli_transcript(self):
+        archive = self.root / 'mock-agentsview'
+        archive.write_text('#!/bin/sh\nif [ "$2" = list ]; then echo \'{"agents":[]}\'; fi\n')
+        archive.chmod(0o700)
+        home = self.root / 'Library/Application Support/Claude-3p/local-agent-mode-sessions/org/workspace'
+        local_id = '12345678-1234-4123-a123-123456789012'
+        current_id = '22345678-1234-4123-a123-123456789012'
+        previous_id = '32345678-1234-4123-a123-123456789012'
+        short = home / local_id[:8] / '.claude/projects/encoded-output'
+        children = short / current_id / 'subagents/nested'
+        children.mkdir(parents=True)
+        meta = home / f'local_{local_id}.json'
+        original = {'cliSessionId': current_id, 'title': 'Atlas', 'systemPrompt': 'Private fixture'}
+        meta.write_text(json.dumps(original))
+        for path in (short / f'{current_id}.jsonl', short / f'{previous_id}.jsonl', children / 'agent-fixture.jsonl'):
+            path.write_text('{"type":"user"}\n')
+        env = {**os.environ, 'HOME': str(self.root), 'AGENT_BRAIN_DATA': str(self.data),
+               'AGENT_BRAIN_SYNC_DAEMON': '0', 'AGENTSVIEW_BIN': str(archive), 'AGENT_BRAIN_PACKET_PYTHON': ''}
+        command = ['node', str(Path(brain.__file__).with_name('collect.mjs')), 'cowork']
+        subprocess.run(command, env=env, check=True, capture_output=True)
+        staged = self.data / 'sources/cowork/1/org/workspace'
+        current = staged / f'local_{local_id}' / '.claude/projects/encoded-output'
+        self.assertTrue((current / f'{current_id}.jsonl').is_file())
+        self.assertTrue((current / current_id / 'subagents/nested/agent-fixture.jsonl').is_file())
+        older = staged / f'additional-transcripts/{local_id}/local_{previous_id}'
+        metadata = json.loads(older.with_suffix('.json').read_text())
+        self.assertEqual(metadata, {'cliSessionId': previous_id, 'title': 'Atlas'})
+        self.assertTrue((older / '.claude/projects/encoded-output' / f'{previous_id}.jsonl').is_file())
+        self.assertEqual(json.loads(meta.read_text()), original)
+
     def test_confirmed_version_scoped_requirements_and_read_file(self):
         v1 = self.root / 'old.md'
         v2 = self.root / 'new.md'
@@ -352,6 +383,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         (self.data / 'sources.json').write_text(json.dumps({
             'sources/codex/0/rollout-12345678-1234-4123-a123-123456789012.jsonl.zst': {'source': str(original)},
             'sources/kimi-work/0/wire.jsonl': {'source': str(original)},
+            'sources/kimi-work/0/workspace/ctitle-example/agents/main/wire.jsonl': {'source': str(original)},
             'sources/cowork/0/audit.jsonl': {'source': str(original)},
         }))
         with sqlite3.connect(self.data / 'agentsview' / 'sessions.db') as index:
@@ -373,6 +405,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertTrue(sources['kimi-work']['incomplete'])
         self.assertEqual(sources['kimi-work']['parser_incomplete_sessions'], 1)
         self.assertEqual(sources['kimi-work']['transcripts_without_index'], 1)
+        self.assertEqual(sources['kimi-work']['excluded_auxiliary_logs'], 1)
         self.assertNotIn('cowork', sources)
 
     def test_rate_limit_leaves_a_visible_status_and_stops_until_next_window(self):
