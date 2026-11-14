@@ -770,6 +770,39 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual([(item['ordinal'],item.get('file'),item.get('inline_sections')) for item in checked],
                          [(1,'worksheet.docx',None),(3,None,4)])
 
+    def test_recall_checks_hidden_revisions_before_returning_cached_approval(self):
+        sid = 'codex:fictional-hidden-version'
+        file = '/tmp/atlas.md'
+        approval = '这份 atlas.md 作为终版。'
+        self.archive_messages(sid,'Atlas',[
+            ('assistant',f'First version [{file}]({file}).'),
+            ('assistant','I checked the schedule.'),
+            ('user',approval),
+        ])
+        work = self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Deliver the report.',session_id=sid)
+        index_file = self.data/'projects'/work['project_id']/'recall.md'
+        evidence = {'1:0':{'role':'assistant','text':'First version','session_id':sid,'ordinal':0,'files':[file]},
+                    '1:2':{'role':'user','text':approval,'session_id':sid,'ordinal':2}}
+        reply = {'claims':[{'ref':'1:2','kind':'confirmed','quote':approval,'text':'Approved.','path':file,
+                            'delivery_ref':'1:0'}]}
+        args = {'project':'Atlas','question':'Which version was approved?'}
+        with patch.object(brain.recall,'evidence_package',return_value=({},evidence,[])), \
+             patch.object(brain.eco,'call',return_value=reply) as eco_call:
+            initial = self.tool('recall',**args)
+            self.assertEqual(initial['evidence'][0]['delivery_ordinal'],0)
+            self.assertTrue(self.tool('recall',**args)['cached'])
+            self.assertIn('Approved.',index_file.read_text())
+            with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+                newer = f'Replaced the report at [{file}]({file}).'
+                index.execute('UPDATE messages SET content=?,dialogue_text=? WHERE session_id=? AND ordinal=1',(newer,newer,sid))
+                index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?",(sid,))
+            result = self.tool('recall',**args)
+            self.assertEqual(result['route'],'local')
+            self.assertEqual(eco_call.call_count,2)
+            self.assertNotIn('Approved.',index_file.read_text())
+        validation = [json.loads(line) for line in (self.data/'recall_validation.jsonl').read_text().splitlines()]
+        self.assertEqual(validation[-1]['rejected'],{'confirmation':1})
+
     def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
         evidence = {

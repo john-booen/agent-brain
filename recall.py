@@ -733,13 +733,20 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
     return result
 
 
-def confirmation_source(item, source, evidence):
+def confirmation_source(item, source, evidence, read_context=None):
     ref = item.get('delivery_ref')
     delivery = evidence.get(ref) if isinstance(ref,str) else None
     if (not delivery or delivery['role']!='assistant' or delivery['session_id']!=source['session_id']
             or delivery['ordinal']>=source['ordinal']):
         return None
     text = source['text']
+    between = (row for row in evidence.values() if row['session_id']==source['session_id']
+               and row['role']=='assistant' and delivery['ordinal']<row['ordinal']<source['ordinal'])
+    if read_context is not None:
+        context = read_context(source['session_id'], delivery['ordinal'], source['ordinal'])
+        if context is None:
+            return None
+        text, between = context
     english = re.match(r'\s*(?:I (?:approve|accept)\b|(?:approved|accepted)[.!\s]*$)',text,re.I)
     negative = re.search(r'\b(?:not|never|reject\w*|draft|revise\w*|change\w*|after|once|if|yet|pending)\b',text,re.I)
     conditional = re.search(r'如果|等我|等你|先等|没确认|没通过|暂不|再看|前提|才定',text)
@@ -747,21 +754,36 @@ def confirmation_source(item, source, evidence):
         return None
     attachments = delivery.get('files', [])
     path = item.get('path')
-    intervening = any(row['session_id']==source['session_id'] and row['role']=='assistant'
-                      and delivery['ordinal']<row['ordinal']<source['ordinal']
-                      and (row.get('files') or row.get('inline_sections')) for row in evidence.values())
-    near = source['ordinal'] - delivery['ordinal'] <= 4 and not intervening
     if path:
         if path not in attachments:
             return None
         named = path in text or (Path(path).name in text and
                                 sum(Path(p).name==Path(path).name for p in attachments)==1)
-        same_name_versions = any(row['session_id']==source['session_id'] and row['role']=='assistant'
-                                 and delivery['ordinal']<row['ordinal']<source['ordinal']
-                                 and any(Path(p).name==Path(path).name for p in row.get('files', []))
-                                 for row in evidence.values())
-        return delivery if named and not same_name_versions or near and len(attachments)==1 else None
-    return delivery if not attachments and delivery.get('inline_sections') and near else None
+        if named:
+            replaced = any(any(Path(p).name==Path(path).name for p in row.get('files', [])) for row in between)
+            return delivery if not replaced else None
+    near = source['ordinal'] - delivery['ordinal'] <= 4
+    if not near or any(row.get('files') or row.get('inline_sections') for row in between):
+        return None
+    if path and len(attachments)==1 or not path and not attachments and delivery.get('inline_sections'):
+        return delivery
+    return None
+
+
+def confirmation_context(index, sid, delivery, approval, revision, visible, paths_in, encode):
+    current = index.execute('SELECT transcript_revision FROM sessions WHERE id=?',(sid,)).fetchone()
+    if current is None or current[0]!=revision:
+        return None
+    markers = dict(index.execute("""SELECT ordinal,role FROM messages WHERE session_id=? AND ordinal IN (?,?) AND is_system=0""",
+                                 (sid,delivery,approval)))
+    if markers != {delivery:'assistant',approval:'user'}:
+        return None
+    user = index.execute('SELECT * FROM messages WHERE session_id=? AND ordinal=?',(sid,approval)).fetchone()
+    middle = index.execute("""SELECT ordinal FROM messages WHERE session_id=? AND ordinal>? AND ordinal<?
+                              AND role='assistant' AND is_system=0 ORDER BY ordinal""", (sid,delivery,approval))
+    return visible(dict(user)), (row for (ordinal,) in middle
+                                for row in extraction.transcript(index,sid,visible,paths_in,encode,
+                                                                 outbound=True,focused=True,start=ordinal,end=ordinal))
 
 
 def source_quote(text, quote):
@@ -773,7 +795,7 @@ def source_quote(text, quote):
     return match[0] if match else None
 
 
-def checked_claims(raw, evidence, diagnostics=None):
+def checked_claims(raw, evidence, diagnostics=None, read_confirmation=None):
     rejected = defaultdict(int)
     if diagnostics is None:
         diagnostics = {}
@@ -813,7 +835,7 @@ def checked_claims(raw, evidence, diagnostics=None):
             rejected['path'] += 1
             continue
         if kind == 'confirmed':
-            approval = confirmation_source(item, source, evidence)
+            approval = confirmation_source(item, source, evidence, read_confirmation)
             if not approval:
                 rejected['confirmation'] += 1
                 continue
@@ -933,10 +955,26 @@ def write_index(db, directory, pid, name):
         item = json.loads(raw)
         if item.get('anchors'):
             body.append(f'- {item["summary"]} · {sid}#{item["anchors"][0]}')
-    checks = db.execute('SELECT data FROM recall_answers WHERE project_id=? ORDER BY saved DESC LIMIT 10', (pid,))
+    checks = [json.loads(raw) for raw, in db.execute(
+        'SELECT data FROM recall_answers WHERE project_id=? ORDER BY saved DESC LIMIT 10', (pid,))]
+    sessions = {fact['session_id'] for check in checks for fact in check.get('evidence', []) if fact.get('kind')=='confirmed'}
+    revisions = {}
+    if sessions:
+        archive = directory/'agentsview/sessions.db'
+        try:
+            with closing(sqlite3.connect(archive.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as index:
+                revisions = dict(index.execute('SELECT id,transcript_revision FROM sessions WHERE id IN (SELECT value FROM json_each(?))',
+                                               (json.dumps(sorted(sessions)),)))
+        except (OSError, sqlite3.Error):
+            pass
     body += ['', '## 深查核实', '']
-    for raw, in checks:
-        for fact in json.loads(raw).get('evidence', []):
+    for checked in checks:
+        for fact in checked.get('evidence', []):
+            if fact.get('kind')=='confirmed':
+                sid = fact['session_id']
+                stored = checked.get('approval_revisions', {})
+                if sid not in stored or sid not in revisions or stored[sid]!=revisions[sid]:
+                    continue
             body.append(f'- {fact["text"]} · {fact["session_id"]}#{fact["ordinal"]}')
     folder = directory / 'projects' / pid
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -990,8 +1028,13 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
     try:
         with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
             index.row_factory = sqlite3.Row
+            index.execute('BEGIN')
             payload, evidence, tags = evidence_package(db,index,retrieval_project,question,visible,paths_in,encode,
                                                        prefer_logs,use_tags)
+            if evidence and not (local_only or offset):
+                sessions = sorted({row['session_id'] for row in evidence.values() if row['role']=='user'})
+                revisions = dict(index.execute('SELECT id,transcript_revision FROM sessions WHERE id IN (SELECT value FROM json_each(?))',
+                                               (json.dumps(sessions),)))
         if evidence:
             if local_only or offset:
                 return local_result()
@@ -1003,12 +1046,30 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             boundary = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
             cached = db.execute('SELECT data FROM recall_answers WHERE key=? AND saved>=?', (fingerprint, boundary)).fetchone()
             if cached:
-                return bounded({'cached': True, **json.loads(cached[0])}, encode, count)
+                saved = json.loads(cached[0])
+                stored_revisions = saved.pop('approval_revisions', {})
+                confirmed_sessions = {fact['session_id'] for fact in saved.get('evidence', []) if fact.get('kind')=='confirmed'}
+                if all(sid in stored_revisions and sid in revisions and stored_revisions[sid]==revisions[sid]
+                       for sid in confirmed_sessions):
+                    return bounded({'cached': True, **saved}, encode, count)
+                # Expired approvals should not appear as verified in the project index.
+                with db:
+                    db.execute('DELETE FROM recall_answers WHERE key=? AND data=?',(fingerprint,cached[0]))
+                if project_id:
+                    name = db.execute('SELECT name FROM projects WHERE id=?',(project_id,)).fetchone()[0]
+                    write_index(db,directory,project_id,name)
             response = eco.call(db, settings, [{'role': 'system', 'content': PROMPT},
                 {'role': 'user', 'content': packed}],
                 'recall', model, encode, recall=True)
             diagnostics = validation if validation is not None else {}
-            facts = checked_claims(response, evidence, diagnostics)
+            def read_confirmation(sid, delivery, approval):
+                if sid not in revisions:
+                    return None
+                return confirmation_context(index,sid,delivery,approval,revisions[sid],visible,paths_in,encode)
+            with closing(sqlite3.connect(archive.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as index:
+                index.row_factory = sqlite3.Row
+                index.execute('BEGIN')
+                facts = checked_claims(response, evidence, diagnostics, read_confirmation)
             try:
                 append_local_record(directory/'recall_validation.jsonl', {
                     'at':datetime.now(timezone.utc).isoformat(), 'sha256':digest, **diagnostics})
@@ -1019,9 +1080,12 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
                 result = {'level': 1, 'route': 'Eco', 'evidence': facts}
                 if isinstance(uncertain, str) and uncertain.strip():
                     result['uncertain'] = uncertain[:150]
+                approved_revisions = {fact['session_id']:revisions[fact['session_id']]
+                                      for fact in facts if fact['kind']=='confirmed'}
                 with db:
                     db.execute('INSERT OR REPLACE INTO recall_answers VALUES(?,?,?,?)',
-                               (fingerprint, project_id, datetime.now(timezone.utc).isoformat(), encode(result)))
+                               (fingerprint, project_id, datetime.now(timezone.utc).isoformat(),
+                                encode({**result, 'approval_revisions':approved_revisions})))
                 if project_id:
                     name = db.execute('SELECT name FROM projects WHERE id=?', (project_id,)).fetchone()[0]
                     write_index(db, directory, project_id, name)
