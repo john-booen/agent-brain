@@ -611,6 +611,34 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(list(prioritize(self.db, log['project_id'], 'Atlas packing instructions?', evidence)),
                          list(evidence))
 
+    def test_progress_fallback_frontloads_report_and_newer_handoff(self):
+        sid = 'codex:fictional-recall-progress'
+        report, notes, evidence = (self.root / name for name in ('report.md','notes.md','evidence.md'))
+        for path in (report,notes,evidence):
+            path.write_text('FILE_BODY_STAYS_LOCAL')
+        self.archive_messages(sid, 'Atlas', [('assistant',f'Delivered `{report}`.'),
+            ('assistant','An older discussion of the progress question.'),
+            ('assistant',f'Follow-up review at `{notes}` and `{evidence}`.')])
+        log = self.tool('log_work', project='Atlas', create_project=True, summary='Two real handoffs.',
+                        source='codex', session_id=sid, deliverables=[
+                            {'path':str(report),'task':'Report','ordinal':0,'final':True},
+                            {'path':str(notes),'task':'Review','ordinal':2},
+                            {'path':str(evidence),'task':'Evidence','ordinal':2}])
+        row = {'ref':'1:1','session_id':sid,'ordinal':1,'role':'assistant','text':'Unrelated progress chatter.'}
+        package = ({'messages':[{k:v for k,v in row.items() if k!='session_id'}]}, {'1:1':row}, [])
+        with patch.object(brain.recall,'evidence_package',return_value=package), \
+             patch.object(brain.eco,'call',side_effect=ConnectionRefusedError) as route:
+            value = self.tool('recall',project=log['project_id'],question='Atlas 接着做到哪了？')
+            self.assertEqual((value['level'],value['route']),(3,'local'))
+            self.assertTrue(value['reason'])
+            self.assertEqual([item['ordinal'] for item in value['evidence'][:2]],[0,2])
+            self.assertEqual(set(value['evidence'][1]['files']),{notes.name,evidence.name})
+            self.assertNotIn('FILE_BODY_STAYS_LOCAL',brain.json_text(value))
+            self.assertNotIn(str(report),brain.json_text(route.call_args.args[2]))
+            focused = self.tool('recall',project='Atlas',question='Atlas 具体哪份报告?',local_only=True)
+            self.assertEqual([item['ordinal'] for item in focused['evidence']],[1])
+            self.assertEqual(route.call_count,1)
+
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'
         version = self.root/'agenda.md'

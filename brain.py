@@ -1528,7 +1528,8 @@ def call_tool(db, name, args):
     if name == "recall":
         return recall.query(db, DATA, config().get('eco', {}), args.get('project'), args['question'],
                             resolve_project_id, get_project, visible, packet.paths_in, json_text,
-                            model, usage.token_counter(DATA),local_only=args.get('local_only',False),offset=args.get('offset',0))
+                            model, usage.token_counter(DATA),local_only=args.get('local_only',False),offset=args.get('offset',0),
+                            load_packet=lambda pid: packet.load(db, DATA, pid, visible, clean, lazy=True)[0])
     if name == "get_session":
         result = session_excerpt(**args)
         if response_size(result) > QUERY_BYTES:

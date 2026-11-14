@@ -524,6 +524,41 @@ def prioritize_logged_evidence(db, project_id, question, evidence):
     return {ref:evidence[ref] for ref in dict.fromkeys([*matched[:2], *evidence])}
 
 
+def project_progress_evidence(db, archive, project_id, question, visible, paths_in, encode, load_packet):
+    if not project_id or load_packet is None:
+        return {}
+    names = db.execute('''SELECT name FROM projects WHERE id=?
+                          UNION SELECT alias FROM project_aliases WHERE project_id=?''', (project_id, project_id))
+    intent = question.casefold()
+    for name in sorted((name.casefold() for name, in names), key=len, reverse=True):
+        intent = intent.replace(name, ' ')
+    intent = intent.strip(' \t：:，,？?。！!')
+    if not re.fullmatch(r'(?:(?:现在|目前|接着|继续|最近|最新)\s*)*'
+                        r'(?:做到哪(?:儿|里)?了?|进展(?:如何|怎么样)?|什么进展|进度(?:如何|怎么样)?)', intent):
+        return {}
+    items = load_packet(project_id)['deliverables']
+    result = {}
+    with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
+        index.row_factory = sqlite3.Row
+        recent = sorted(items, key=lambda item: (item['ref'].get('evidence_time') or item['ref']['time']), reverse=True)
+        # Keep one current report and the most recent separate, readable handoff.
+        for item in [*items[:1], *recent]:
+            ref = item['ref']
+            sid, ordinal = ref['session_id'], ref['ordinal']
+            path = item.get('path')
+            if type(ordinal) is not int or (sid, ordinal) in result or not path or not Path(path).is_absolute() or not Path(path).is_file():
+                continue
+            rows = extraction.transcript(index,sid,visible,paths_in,encode,focused=True,start=ordinal,end=ordinal)
+            if rows and rows[0]['role']=='assistant' and rows[0]['text'].strip():
+                files = list(dict.fromkeys(other['path'] for other in items
+                             if other.get('path') and other['ref']['session_id']==sid
+                             and other['ref']['ordinal']==ordinal))[:2]
+                result[sid, ordinal] = {**rows[0], 'session_id': sid, 'files': files}
+            if len(result)>=2:
+                break
+    return result
+
+
 def local_evidence(evidence, encode, count, offset=0, reason=''):
     rows=list(evidence.values())
     by_session = defaultdict(list)
@@ -735,7 +770,7 @@ def write_index(db, directory, pid, name):
 
 
 def query(db, directory, settings, project, question, resolve, get_project, visible, paths_in, encode, model, count,
-          prefer_logs=False, use_tags=True, local_only=False, offset=0):
+          prefer_logs=False, use_tags=True, local_only=False, offset=0, load_packet=None):
     question = question.strip()
     if not question:
         return {'level': 4, 'status': '请提供具体的历史问题'}
@@ -747,6 +782,18 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
     evidence = {}
     if offset < 0:
         raise ValueError('Offset must be nonnegative')
+
+    def local_result(reason=''):
+        local = prioritize_logged_evidence(db,project_id,question,evidence)
+        try:
+            progress = project_progress_evidence(db,archive,project_id,question,visible,paths_in,encode,load_packet)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            progress = {}
+        if progress:
+            local = {**progress, **{ref: row for ref, row in local.items()
+                                   if (row['session_id'],row['ordinal']) not in progress}}
+        return local_evidence(local,encode,count,offset,reason) if local else None
+
     failure = '未找到可核出处'
     try:
         with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
@@ -755,8 +802,7 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
                                                        prefer_logs,use_tags)
         if evidence:
             if local_only or offset:
-                local = prioritize_logged_evidence(db,project_id,question,evidence)
-                return local_evidence(local,encode,count,offset)
+                return local_result()
             packed = encode(payload)
             digest = hashlib.sha256(packed.encode()).hexdigest()
             fingerprint = hashlib.sha256(encode([PROMPT, project_id, digest, list(evidence.values()),
@@ -787,9 +833,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         failure = str(exc)
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         failure = '在线路线或索引暂时不可用'
-    if evidence:
-        local = prioritize_logged_evidence(db,project_id,question,evidence)
-        return local_evidence(local,encode,count,offset,failure)
+    if result := local_result(failure):
+        return result
     if tags:
         return bounded({'level': 3, 'status': failure,
                         'evidence': [{'text': t['summary'][:150], 'session_id': sid,
