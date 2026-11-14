@@ -28,6 +28,7 @@ REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
 SOURCES = ("codex", "cowork", "deepseek-harness", "kimi-work")
 LOG_SOURCES = (*SOURCES, "antigravity")
+IMPORT_SOURCES = ("claude-ai", "gemini-apps")
 CODEX_REVIEW_PREFIXES = (
     "The following is the Codex agent history whose request action you are assessing.",
     "The following is the Codex agent history added since your last approval assessment.",
@@ -331,7 +332,7 @@ def source_status():
     path = DATA / "coverage.json"
     coverage = json.loads(path.read_text()) if path.exists() else {}
     results = {}
-    for agent in SOURCES:
+    for agent in (*SOURCES, *(name for name in IMPORT_SOURCES if name in coverage.get('sources', {}))):
         item = coverage.get("sources", {}).get(agent)
         if item is None:
             results[agent] = {"status": "没接入"}
@@ -1561,6 +1562,44 @@ def build_packets(db, args):
     return counts
 
 
+def import_conversations(kind, path):
+    if not path.is_file() and not path.is_dir():
+        raise ValueError('Choose a locally saved export')
+    import zipfile
+    transcript = path
+    temporary = None
+    if kind == 'claude-ai':
+        temporary = tempfile.TemporaryDirectory(prefix='agent-brain-import-')
+        transcript = Path(temporary.name) / 'conversations.json'
+        if path.is_dir():
+            payload = json.loads((path / 'conversations.json').read_text())
+        elif path.suffix.casefold() == '.zip':
+            with zipfile.ZipFile(path) as archive_file:
+                entries = [name for name in archive_file.namelist() if Path(name).name == 'conversations.json']
+                if len(entries) != 1:
+                    raise ValueError('Expected one conversations.json in the export')
+                payload = json.loads(archive_file.read(entries[0]))
+        else:
+            payload = json.loads(path.read_text())
+        transcript.write_text(json_text(safe(payload)))
+    try:
+        result = subprocess.run([config().get('agentsview_bin', 'agentsview'), 'source', 'import',
+                                 '--type', kind, str(transcript)], env=archive_env(), text=True,
+                                capture_output=True, check=False)
+    finally:
+        if temporary:
+            temporary.cleanup()
+    if result.returncode:
+        raise RuntimeError(f'AgentsView import failed with exit {result.returncode}')
+    report = health.read_json(DATA / 'coverage.json')
+    index_path = DATA / 'agentsview/sessions.db'
+    with closing(sqlite3.connect(index_path.as_uri() + '?mode=ro', uri=True)) as index:
+        found = index.execute('SELECT COUNT(*) FROM sessions WHERE agent=? AND deleted_at IS NULL', (kind,)).fetchone()[0]
+    report.setdefault('sources', {})[kind] = {'found': found, 'indexedAt': now(), 'importOnly': True}
+    write_file(DATA / 'coverage.json', json_text(report) + '\n')
+    return {'source': kind, 'indexed_sessions': found}
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1596,6 +1635,9 @@ def main():
     extract_run.add_argument('--session', action='append')
     extract_run.add_argument('--limit', type=int, default=5)
     extract_run.add_argument('--force', action='store_true')
+    import_run = commands.add_parser('import-conversations', help='Import a locally saved chat export using AgentsView')
+    import_run.add_argument('source', choices=IMPORT_SOURCES)
+    import_run.add_argument('path', type=Path)
     merging = commands.add_parser('merge-projects', help='Merge verified duplicates while retaining their names and IDs')
     merging.add_argument('project')
     merging.add_argument('duplicates', nargs='+')
@@ -1650,6 +1692,8 @@ def main():
             result = extract_packets(db, args)
             print(json_text(result), flush=True)
             return int(bool(result['failed']))
+        elif args.command == 'import-conversations':
+            print(json_text(import_conversations(args.source, args.path.expanduser())))
         elif args.command == 'merge-projects':
             print(json_text(merge_projects(db, args.project, args.duplicates, args.reason)))
         elif args.command == 'move-record':
