@@ -1704,6 +1704,11 @@ def main():
         elif args.command == 'build-packets':
             result = build_packets(db, args)
             print(json_text(result), flush=True)
+            if result['unreadable'] or result['no_text']:
+                fd = os.open(DATA / 'health.log', os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, 'a') as log:
+                    print(json_text({'event': 'file_extraction', 'at': now(), 'unreadable': result['unreadable'],
+                                     'no_text': result['no_text']}), file=log)
             if result['failed_projects']:
                 return 1
         elif args.command == 'extract-packets':

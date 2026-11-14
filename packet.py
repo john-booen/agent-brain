@@ -681,7 +681,7 @@ def summary_status(db, value):
         return '本机文件未找到'
     fingerprint = f'{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}'
     state = db.execute('SELECT status FROM packet_file_failures WHERE path=? AND fingerprint=?', (value, fingerprint)).fetchone()
-    return '未提取到正文' if state and state['status'] == 'no_text' else '摘要待生成'
+    return {'no_text': '未提取到正文', 'unreadable': '文件提取失败'}.get(state['status'] if state else '', '摘要待生成')
 
 
 def prepare_file(db, value, clean, force=False):
@@ -724,6 +724,8 @@ def prepare_file(db, value, clean, force=False):
             method = 'extractive'
             status = 'built'
     except (OSError, ValueError):
+        with db:
+            db.execute('INSERT OR REPLACE INTO packet_file_failures VALUES(?,?,?)', (value, fingerprint, 'unreadable'))
         return 'unreadable', None, None
     with db:
         db.execute('INSERT INTO packet_file_summaries VALUES(?,?,?) ON CONFLICT(fingerprint) DO UPDATE SET '
