@@ -868,6 +868,25 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                                      'rejected':{'quote':2,'role':1}})
         self.assertFalse(brain.recall.checked_claims({'claims':[{**claim,'quote':'采用 会议口径'}]},evidence))
 
+    def test_recall_checks_one_explicit_yuan_amount_without_requiring_matching_units(self):
+        source = {'role':'user','session_id':'codex:fictional-amount','ordinal':2,
+                  'text':'收入采用会议口径。2026 年约为４，０００ 万元，之后另核。'}
+        claim = {'ref':'1:2','quote':'采用会议口径。','kind':'rule'}
+        diagnostics = {}
+        replies = {'claims':[{**claim,'text':text} for text in
+                             ('2026 年收入为 5,000 万元。','2026 年约 0.4 亿元。','写作40,000,000元。',
+                              '采用会议口径。')]}
+        found = brain.recall.checked_claims(replies, {'1:2':source}, diagnostics)
+        self.assertEqual([item['text'] for item in found], [item['text'] for item in replies['claims'][1:]])
+        self.assertEqual(diagnostics['rejected'], {'amount_mismatch':1})
+        multiple = {**source,'text':source['text']+'原来另有 1.2 亿元的预测。'}
+        self.assertTrue(brain.recall.checked_claims({'claims':[replies['claims'][0]]}, {'1:2':multiple}))
+        shorthand = {**source,'text':'采用会议口径。2026 年约 4,000 万、2027 年收入过亿。'}
+        self.assertFalse(brain.recall.checked_claims({'claims':[replies['claims'][0]]}, {'1:2':shorthand}))
+        self.assertEqual(brain.recall.yuan_amounts('粉丝总数 4,000 万。'), set())
+        no_amount = {**source,'text':'采用会议口径。优先检查 8 个元素。'}
+        self.assertTrue(brain.recall.checked_claims({'claims':[replies['claims'][0]]}, {'1:2':no_amount}))
+
     def test_recall_retains_claims_and_uncertainty_before_pruning_quotes(self):
         answer = {'level':1, 'route':'Eco', 'cached':True, 'uncertain':'最终日期等对方确认。', 'evidence':[
             {'kind':'deliverable','text':'已完成报告。','session_id':'cowork:fictional','ordinal':n,

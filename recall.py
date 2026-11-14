@@ -1,12 +1,14 @@
 """Answer focused handoff questions with checked local conversation evidence."""
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import os
 import json
 from pathlib import Path
 import re
 import sqlite3
+import unicodedata
 from collections import defaultdict
 from tempfile import NamedTemporaryFile
 
@@ -820,6 +822,17 @@ def source_quote(text, quote):
     return match[0] if match else None
 
 
+YUAN_AMOUNT = re.compile(r'(?<![0-9A-Za-z_.,+−-])([+−-]?(?:[0-9]{1,3}(?:,[0-9]{3}){1,6}|[0-9]{1,21})(?:\.[0-9]{1,6})?)'
+                         r'\s*(万元|亿元|元(?!素|器|件)|[万亿](?=\s*[,、。;)]|\s*$))')
+YUAN_MULTIPLIER = {'元':1, '万':10_000, '万元':10_000, '亿':100_000_000, '亿元':100_000_000}
+
+
+def yuan_amounts(text, *, allow_shorthand=False):
+    normalized = unicodedata.normalize('NFKC', text)
+    return {Decimal(value.replace(',', '').replace('−', '-')) * YUAN_MULTIPLIER[unit]
+            for value, unit in YUAN_AMOUNT.findall(normalized) if unit.endswith('元') or allow_shorthand}
+
+
 def checked_claims(raw, evidence, diagnostics=None, read_confirmation=None):
     rejected = defaultdict(int)
     if diagnostics is None:
@@ -855,6 +868,14 @@ def checked_claims(raw, evidence, diagnostics=None, read_confirmation=None):
         if matched is None:
             rejected['quote'] += 1
             continue
+        # Compare only when each side gives one amount. More figures require context.
+        money_context = bool(re.search(r'收入|营收|金额|估值|融资额|投资额|出资额|人民币', text + ' ' + source['text']))
+        claimed_amounts = yuan_amounts(text, allow_shorthand=money_context)
+        if len(claimed_amounts)==1 and kind in {'answer','rule'} and money_context:
+            source_amounts = yuan_amounts(source['text'], allow_shorthand=money_context)
+            if len(source_amounts)==1 and claimed_amounts != source_amounts:
+                rejected['amount_mismatch'] += 1
+                continue
         path = item.get('path')
         if path is not None and not isinstance(path,str):
             rejected['path'] += 1
@@ -1077,7 +1098,7 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
                 return local_result()
             packed = encode(payload)
             digest = hashlib.sha256(packed.encode()).hexdigest()
-            fingerprint = hashlib.sha256(encode([PROMPT, project_id, digest, list(evidence.values()),
+            fingerprint = hashlib.sha256(encode([PROMPT, 'yuan-amounts-v1', project_id, digest, list(evidence.values()),
                                                    prefer_logs, use_tags]).encode()).hexdigest()
             record_evidence(directory,digest,evidence,len(packed.encode()))
             boundary = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
