@@ -13,7 +13,7 @@ import file_text
 import notes
 
 
-VERSION = 24
+VERSION = 26
 FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -121,6 +121,13 @@ def source_versions(index, sessions):
 def citation(row, ordinal=None, time=None):
     return {'source': row['source'], 'session_id': row['session_id'] or row['id'],
             'ordinal': ordinal, 'time': time or row['occurred']}
+
+
+def format_reference(ref):
+    ordinal = f"#{ref['ordinal']}" if ref['ordinal'] is not None else ''
+    source = ref.get('evidence_source') or ref['source']
+    timestamp = ref.get('evidence_time') or ref['time']
+    return f"{source} · {ref['session_id']}{ordinal} · {timestamp}"
 
 
 def available_path(path, cwd=None):
@@ -268,6 +275,38 @@ def recorded_confirmation(index, session_id, ordinal, path, visible):
     previous = index.execute("SELECT * FROM messages WHERE session_id=? AND ordinal>=? AND ordinal<? AND role='assistant' "
                              'ORDER BY ordinal DESC LIMIT 1', (session_id, ordinal - 4, ordinal)).fetchone()
     return bool(previous and Path(path).name in visible(dict(previous)))
+
+
+def recorded_reference(index, row, item, kind, visible):
+    ordinal = item.get('ordinal')
+    if row['kind'] != 'log' or type(ordinal) is not int:
+        return citation(row, ordinal, item.get('evidence_time'))
+    sid = row['session_id']
+    message = index.execute('SELECT role,timestamp,content,dialogue_text,is_system FROM messages '
+                            'WHERE session_id=? AND ordinal=?', (sid, ordinal)).fetchone() if index and sid else None
+    if message:
+        text = visible(dict(message))
+        matches = bool(text and text != '[Skill]' and not NON_USER.match(text))
+        if kind in {'files', 'deliverables'}:
+            path = Path(item['path'])
+            links = re.findall(r'`([^`\n]+)`|\]\(<?([^\n<>]*?)>?\)(?=\s|$|[。；，、·])', text)
+            mentioned = [Path(p) for p in paths_in(text)]
+            mentioned.extend(Path((inline or link).removeprefix('computer://')) for inline, link in links)
+            matches = message['role'] == 'assistant' and any(
+                linked == path or (not linked.is_absolute() and len(linked.parts) > 1 and '..' not in linked.parts
+                                   and linked.parts == path.parts[-len(linked.parts):]) for linked in mentioned)
+            if kind == 'deliverables' and item.get('confirmed') is True:
+                matches = recorded_confirmation(index, sid, ordinal, item['path'], visible)
+        elif kind in {'inputs', 'rules'}:
+            if not text and message['role'] == 'user':
+                text = ' '.join(option['text'] for option in chosen_rules(message['content'] or ''))
+            value = Path(item['path']).name if item.get('path') else item.get('text', '')
+            matches = bool(message['role'] == 'user' and value and ' '.join(value.split()) in ' '.join(text.split()))
+        if matches:
+            # The registration date still orders work entries. The citation displays the source date.
+            return {**citation(row, ordinal, item.get('evidence_time')), 'evidence_source': sid.split(':', 1)[0],
+                    'evidence_time': message['timestamp']}
+    return {**citation(row), 'pending': True}
 
 
 def quoted_rules(text):
@@ -430,13 +469,14 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
         if sid in versions and not (IRRELEVANT.search(data['summary']) and not data.get('files')):
             sessions[sid].append((row, data))
         for item in data.get('inputs', []):
-            ref = citation(row, item.get('ordinal'), item.get('evidence_time'))
+            ref = recorded_reference(index, row, item, 'inputs', visible)
             inputs.append(entry(available_path(item.get('path'), cwd), ref, text=item.get('text'), recorded=True))
         for item in data.get('rules', []):
-            ref = citation(row, item.get('ordinal'), item.get('evidence_time'))
+            ref = recorded_reference(index, row, item, 'rules', visible)
             rules.append({**item, 'ref': ref, 'recorded': True})
-        for item in data.get('files', []) + data.get('deliverables', []):
-            ref = citation(row, item.get('ordinal'), item.get('evidence_time'))
+        file_entries = [(kind, item) for kind in ('files', 'deliverables') for item in data.get(kind, [])]
+        for kind, item in file_entries:
+            ref = recorded_reference(index, row, item, kind, visible)
             path = available_path(item['path'], cwd) or item['path']
             pinned = item['status'] == '用户确认' and (
                 row['kind'] == 'summary' or item.get('confirmed') is True
@@ -596,7 +636,10 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
                                                 [tuple(row) for row in extracted_rows], notes_revision], ensure_ascii=False).encode()).hexdigest()
     if lazy and previous and not force:
         if previous['signature'].startswith(work_signature + ':'):
-            return json.loads(previous['data']), False
+            cached = json.loads(previous['data'])
+            if not any(item.get('ref', {}).get('pending') for key in ('inputs', 'deliverables', 'rules', 'history')
+                       for item in cached[key]):
+                return cached, False
     path = data_dir / 'agentsview' / 'sessions.db'
     index = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5) if path.is_file() else None
     try:

@@ -244,6 +244,52 @@ class PacketTest(unittest.TestCase):
                       deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
             self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
+    def test_work_log_citations_use_source_and_mark_unverified_items(self):
+        sid = 'cowork:fictional-source-date'
+        report = self.root / 'export' / 'report.md'
+        other = self.root / 'export' / 'other.md'
+        sheet = self.root / 'Order report (EN).xlsx'
+        self.archive_messages(sid, 'Atlas', [('user','Use the original date.'),
+            ('assistant',f'Ready at `export/report.md`. [See spreadsheet](computer://{sheet})'),
+            ('assistant','[Skill]')])
+        log = self.tool('log_work', project='Atlas', create_project=True, summary='Register a prior delivery.',
+                        source='codex', session_id=sid, deliverables=[
+                            {'path':str(report),'task':'Report','ordinal':1},
+                            {'path':str(sheet),'task':'Sheet','ordinal':1},
+                            {'path':str(other),'task':'Other','ordinal':1}], rules=[
+                            {'topic':'date','text':'Use the original date.','ordinal':0},
+                            {'topic':'format','text':'Use a table.','ordinal':1}], conclusions=[
+                            {'topic':'arrived','text':'The file arrived.','ordinal':1},
+                            {'topic':'unseen','text':'Missing evidence.','ordinal':99},
+                            {'topic':'skill','text':'A skill notice.','ordinal':2}])
+        for section, snippets in {
+            'deliverables': (f'cowork · {sid}#1 · 2026-01-01T00:00:01Z','Other ·','原文待核'),
+            'rules': (f'cowork · {sid}#0 · 2026-01-01T00:00:00Z','Use a table.','原文待核'),
+            'conclusions': (f'cowork · {sid}#1 · 2026-01-01T00:00:01Z','Missing evidence.','原文待核'),
+        }.items():
+            card = self.tool('get_project', project=log['project_id'], section=section)['card']
+            for snippet in snippets:
+                self.assertIn(snippet, card)
+            self.assertNotIn(f'{sid}#99', card)
+            self.assertNotIn(f'{sid}#2', card)
+            if section == 'deliverables':
+                self.assertTrue(any(sheet.name in line and f'{sid}#1' in line for line in card.splitlines()))
+
+    def test_pending_project_citation_is_rechecked_after_import(self):
+        sid = 'codex:fictional-delayed-import'
+        report = self.root / 'report.md'
+        report.write_text('A delivered report.')
+        self.tool('log_work', project='Atlas', create_project=True, summary='Delivery waiting for import.',
+                  source='codex', session_id=sid, deliverables=[{'path':str(report),'task':'Report','ordinal':0}])
+        card = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('原文待核', card)
+        self.assertNotIn(f'{sid}#0', card)
+        self.assertIn('A delivered report.', self.tool('read_file', project='Atlas', path=report.name)['text'])
+        self.archive_messages(sid, 'Atlas', [('assistant', f'Ready at [{report.name}]({report}).')])
+        card = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(f'{sid}#0', card)
+        self.assertNotIn('原文待核', card)
+
     def test_antigravity_can_log_without_becoming_an_archive_source(self):
         result = self.tool('log_work', project='Atlas', create_project=True, summary='Fictional handoff.', source='antigravity')
         self.assertTrue(result['written'])

@@ -1,8 +1,10 @@
 """Score project-packet predictions against locally curated message anchors."""
 import argparse
 from collections import defaultdict
+from contextlib import closing
 import json
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 
 import brain
@@ -115,6 +117,16 @@ def fictional(fixture):
             path = str(Path(temporary).resolve() / 'fictional-deliverable.md')
             case = fixture['case']
             sid = case['sessions'][0]
+            archive = brain.DATA / 'agentsview'
+            archive.mkdir()
+            with closing(sqlite3.connect(archive / 'sessions.db')) as index, index:
+                index.executescript('''CREATE TABLE sessions(id,cwd,transcript_revision,display_name,session_name);
+                    CREATE TABLE messages(session_id,ordinal,role,timestamp,content,dialogue_text,is_system);''')
+                index.execute('INSERT INTO sessions VALUES(?,?,?,?,?)',
+                              (sid, temporary, '1', fixture['log']['project'], fixture['log']['project']))
+                index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,?)',
+                              (sid, 2, 'assistant', '2026-01-01T00:00:00Z',
+                               f'Delivered the release checklist at `{path}`.', None, 0))
             project = brain.log_work(db, **fixture['log'], create_project=True, session_id=sid,
                                      deliverables=[{'task': 'Checklist', 'path': path, 'ordinal': 2, 'final': True}])
             case['id'] = project['project_id']

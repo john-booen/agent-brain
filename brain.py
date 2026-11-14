@@ -550,18 +550,26 @@ def reference(row, ordinal=None, time=None):
 
 
 def project_contents(db, project, include_log=False, model_sessions=()):
-    rows = db.execute("""
+    rows = [(row, json.loads(row['data'])) for row in db.execute("""
         SELECT w.*, e.reason AS excluded_reason, m.reason AS moved_reason FROM work w
         LEFT JOIN project_record_exclusions e ON e.work_id=w.id
         LEFT JOIN project_record_moves m ON m.work_id=w.id
         WHERE w.project_id=?
         ORDER BY occurred DESC, kind='log' DESC, id DESC
-    """, (project["id"],))
+    """, (project["id"],))]
+    cited_items = [(row, key, item) for row, data in rows if row['kind'] == 'log'
+                   for key in ARRAYS for item in data.get(key, []) if type(item.get('ordinal')) is int]
+    index_path = DATA / 'agentsview/sessions.db'
+    refs = {}
+    if cited_items and index_path.is_file():
+        with closing(sqlite3.connect(index_path.as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
+            index.row_factory = sqlite3.Row
+            refs = {id(item): packet.recorded_reference(index, row, item, key, visible)
+                    for row, key, item in cited_items}
     by_kind = {key: {} for key in ARRAYS}
     superseded = []
     timeline, work_log = [], []
-    for row in rows:
-        data = json.loads(row["data"])
+    for row, data in rows:
         label = reference(row, data.get("ordinal"), data.get("evidence_time"))
         if row['moved_reason']:
             superseded.append(f"- {data['summary']} — {label}（已更正归属）")
@@ -580,11 +588,15 @@ def project_contents(db, project, include_log=False, model_sessions=()):
         for key in ARRAYS:
             for item in data.get(key, []):
                 claim = item.get("text") or item["path"]
-                ref = reference(row, item.get("ordinal"), item.get("evidence_time"))
+                checked = refs.get(id(item))
+                if checked is None and row['kind'] == 'log' and type(item.get('ordinal')) is int:
+                    checked = packet.recorded_reference(None, row, item, key, visible)
+                ref = packet.format_reference(checked) if checked else reference(row, item.get("ordinal"), item.get("evidence_time"))
                 status = item.get("status")
                 if status == '用户确认':
                     status = '已交付'
-                entry = f"- {claim}" + (f"（{status}）" if status else "") + f" — {ref}"
+                qualifier = '（原文待核）' if checked and checked.get('pending') else ''
+                entry = f"- {claim}" + (f"（{status}）" if status else "") + qualifier + f" — {ref}"
                 if include_log:
                     work_log.append(entry)
                 identity = normalized(item.get("topic") or claim)
@@ -699,8 +711,7 @@ def get_project(db, project, section=None, offset=0):
 
 def packet_item(db, item, kind, compact=False):
     ref = item['ref']
-    suffix = f"#{ref['ordinal']}" if ref['ordinal'] is not None else ''
-    source = f"{ref['source']} · {ref['session_id']}{suffix} · {ref['time']}"
+    source = packet.format_reference(ref)
     value = item.get('path')
     label = item.get('kind') or ''
     if kind == 'deliverables' or item.get('status'):
@@ -711,6 +722,8 @@ def packet_item(db, item, kind, compact=False):
         label = (label + ' · ' if label else '') + item['scope']
     if item.get('modeled'):
         label = f'{label} · 模型核对' if label else '模型核对'
+    if ref.get('pending'):
+        label = f'{label} · 原文待核' if label else '原文待核'
     if value:
         title = Path(value).name if compact else value
         summary = packet.file_summary(db, value)
