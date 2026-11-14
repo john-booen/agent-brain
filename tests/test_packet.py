@@ -537,6 +537,34 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual([row['ordinal'] for row in last['evidence']],[11])
         self.assertNotIn('next_offset',last)
 
+    def test_local_recall_promotes_only_matching_registered_source_messages(self):
+        sid = 'codex:fictional-acceptance'
+        self.archive_messages(sid, 'Atlas', [('user','Atlas acceptance?'),
+            ('assistant','Keep the original checklist.'), ('assistant','A different schedule.'),
+            ('assistant','Acceptance remains open.')])
+        log = self.tool('log_work', project='Atlas', create_project=True, summary='Reviewed the test history.',
+                        source='codex', session_id=sid, conclusions=[
+                            {'topic':'duplicate test', 'text':'Stop duplicate tests.', 'ordinal':1},
+                            {'topic':'weekly schedule', 'text':'Move the weekly schedule.', 'ordinal':2},
+                            {'topic':'duplicate test', 'text':'Duplicate test still pending.', 'ordinal':3}])
+        evidence = {
+            str(ordinal): {'session_id':sid, 'ordinal':ordinal, 'role':'assistant', 'text':value}
+            for ordinal,value in [(2,'A different schedule.'), (1,'Keep the original checklist.')]
+        }
+        prioritize = brain.recall.prioritize_logged_evidence
+        def measure(value):
+            return 500 * len(json.loads(value)['evidence'])
+
+        ranked = prioritize(self.db, log['project_id'], 'Atlas duplicate test acceptance?', evidence)
+        page = brain.recall.local_evidence(ranked, brain.json_text, measure)
+        self.assertEqual([(row['ordinal'], row['text']) for row in page['evidence']],
+                         [(1, 'Keep the original checklist.')])
+        following = brain.recall.local_evidence(ranked, brain.json_text, measure, page['next_offset'])
+        self.assertEqual([row['ordinal'] for row in following['evidence']], [2])
+        self.assertEqual(list(evidence), ['2', '1'])
+        self.assertEqual(list(prioritize(self.db, log['project_id'], 'Atlas packing instructions?', evidence)),
+                         list(evidence))
+
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'
         version = self.root/'agenda.md'

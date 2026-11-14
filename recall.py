@@ -487,6 +487,43 @@ def bounded(result, encode, count):
     return result if fits() else {'level': result['level'], 'status': '查询结果过长，请缩小问题'}
 
 
+def prioritize_logged_evidence(db, project_id, question, evidence):
+    if not project_id:
+        return evidence
+    names = db.execute('''SELECT name FROM projects WHERE id=?
+                          UNION SELECT alias FROM project_aliases WHERE project_id=?''', (project_id, project_id))
+    question = question.casefold()
+    for name in sorted((name.casefold() for name, in names if len(name)>=3), key=len, reverse=True):
+        question = question.replace(name, ' ')
+    terms = key_terms(question)
+    if len(terms)<2:
+        return evidence
+
+    scores = {}
+    for row in packet.work_rows(db, project_id):
+        sid = row['session_id']
+        if row['kind']!='log' or not sid:
+            continue
+        item = json.loads(row['data'])
+        for category in ('deliverables', 'rules', 'conclusions', 'todos'):
+            for record in item.get(category, []):
+                if not isinstance(record, dict):
+                    continue
+                ordinal = record.get('ordinal')
+                if type(ordinal) is not int:
+                    continue
+                label = ' '.join(str(record.get(key) or '') for key in ('topic','text','task','path')).casefold()
+                score = sum(term in label for term in terms)
+                if score>=2:
+                    anchor = sid, ordinal
+                    scores[anchor] = max(scores.get(anchor, 0), score)
+    if not scores:
+        return evidence
+    matched = [ref for ref, row in evidence.items() if (row['session_id'],row['ordinal']) in scores]
+    matched.sort(key=lambda ref: scores[evidence[ref]['session_id'],evidence[ref]['ordinal']], reverse=True)
+    return {ref:evidence[ref] for ref in dict.fromkeys([*matched[:2], *evidence])}
+
+
 def local_evidence(evidence, encode, count, offset=0, reason=''):
     rows=list(evidence.values())
     by_session = defaultdict(list)
@@ -718,7 +755,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
                                                        prefer_logs,use_tags)
         if evidence:
             if local_only or offset:
-                return local_evidence(evidence,encode,count,offset)
+                local = prioritize_logged_evidence(db,project_id,question,evidence)
+                return local_evidence(local,encode,count,offset)
             packed = encode(payload)
             digest = hashlib.sha256(packed.encode()).hexdigest()
             fingerprint = hashlib.sha256(encode([PROMPT, project_id, digest, list(evidence.values()),
@@ -750,7 +788,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         failure = '在线路线或索引暂时不可用'
     if evidence:
-        return local_evidence(evidence,encode,count,offset,failure)
+        local = prioritize_logged_evidence(db,project_id,question,evidence)
+        return local_evidence(local,encode,count,offset,failure)
     if tags:
         return bounded({'level': 3, 'status': failure,
                         'evidence': [{'text': t['summary'][:150], 'session_id': sid,
