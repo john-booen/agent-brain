@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import file_text
 import packet
+import extraction
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -173,6 +174,7 @@ def connect():
       PRIMARY KEY(session_id, revision, part));
     """)
     packet.schema(db)
+    extraction.schema(db)
     return db
 
 
@@ -558,9 +560,10 @@ def short_entry(entry, max_bytes):
     return clip_bytes(text or entry, max_bytes - len(tail.encode("utf-8"))) + tail
 
 
-def project_overview(project, sections):
+def project_overview(project, sections, extraction_method='规则推断'):
     result = project_index_entry(project)
     result.update(packet_coverage())
+    result['evidence'] = extraction_method
     result["sections"] = [key for key, items in sections.items() if items]
     status = sections["timeline"][0][2:] if sections["timeline"] else "待补记录"
     groups = (("deliverables", 2, 245), ("inputs", 2, 185), ("rules", 2, 210), ("todos", 2, 190),
@@ -620,10 +623,11 @@ def get_project(db, project, section=None, offset=0):
     data, _ = packet.load(db, DATA, row["id"], visible, clean, lazy=True)
     for name in PACKET_FIELDS:
         sections[name] = [packet_item(db, item, name, compact=section is None) for item in data[name]]
+    sections['todos'] = [packet_item(db, item, 'todos', compact=section is None) for item in data.get('model_todos', [])] + sections['todos']
     sections['history'] = [packet_item(db, item, 'history') for item in data['history']] + sections['history']
     if section:
         return project_details(row, section, sections.get(section, []), offset)
-    return project_overview(row, sections)
+    return project_overview(row, sections, data.get('extraction', '规则推断'))
 
 
 def packet_item(db, item, kind, compact=False):
@@ -638,10 +642,13 @@ def packet_item(db, item, kind, compact=False):
             label = f"{item['kind']} · {item['status']}"
     elif kind == 'rules' or item.get('scope'):
         label = (label + ' · ' if label else '') + item['scope']
+    if item.get('modeled'):
+        label = f'{label} · 模型核对' if label else '模型核对'
     if value:
         title = Path(value).name if compact else value
         summary = packet.file_summary(db, value)
-        detail = '，' + summary if summary else ''
+        description = item.get('description') or summary
+        detail = '，' + description if description else ''
         if not compact:
             if not Path(value).is_absolute():
                 detail += '（路径待定位）'
@@ -982,7 +989,7 @@ class ModelRouteError(RuntimeError):
     pass
 
 
-def stream_choice(response):
+def stream_choice(response, on_usage=None):
     content = []
     finish = None
     for line in response:
@@ -992,6 +999,8 @@ def stream_choice(response):
         if payload == b"[DONE]":
             break
         event = json.loads(payload)
+        if on_usage and event.get("usage"):
+            on_usage(event["usage"])
         if event.get("error"):
             error = event["error"]
             message = str(error.get("message", "") if isinstance(error, dict) else error).lower()
@@ -1007,8 +1016,8 @@ def stream_choice(response):
     return {"message": {"content": "".join(content)}, "finish_reason": finish}
 
 
-def model(messages, schema=None, *, local_only=False):
-    settings = model_settings()
+def model(messages, schema=None, *, local_only=False, settings=None, on_usage=None):
+    settings = model_settings() if settings is None else settings
     endpoint = settings.get("url")
     model_id = settings.get("name")
     if not endpoint or not model_id:
@@ -1040,7 +1049,13 @@ def model(messages, schema=None, *, local_only=False):
 
             opener = build_opener(ProxyHandler({}), NoRedirect()).open
         with opener(request, timeout=180) as response:
-            choice = stream_choice(response) if body.get("stream") else json.load(response)["choices"][0]
+            if body.get("stream"):
+                choice = stream_choice(response, on_usage)
+            else:
+                result = json.load(response)
+                if on_usage and result.get("usage"):
+                    on_usage(result["usage"])
+                choice = result["choices"][0]
     except HTTPError as exc:
         if exc.code == 429:
             raise ModelQuotaError(exc.headers.get("Retry-After")) from exc
@@ -1059,6 +1074,25 @@ def model(messages, schema=None, *, local_only=False):
     if not isinstance(result, dict):
         raise ValueError("Model output must be a JSON object")
     return safe(result)
+
+
+def extract_packets(db, args):
+    settings = config().get("packet_extraction", {})
+    cap = settings.get("daily_token_cap", 100000)
+    if type(cap) is not int or cap <= 0:
+        raise ValueError("packet_extraction.daily_token_cap must be a positive integer")
+    ids = args.session or [row[0] for row in db.execute("""
+        SELECT w.session_id FROM work w
+        JOIN projects p ON w.project_id=p.id LEFT JOIN project_redirects r ON r.old_id=p.id
+        WHERE r.old_id IS NULL AND w.session_id IS NOT NULL AND w.kind='summary'
+        GROUP BY w.session_id ORDER BY MAX(w.occurred) DESC""")]
+    route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": 3500,
+             "extra_body": {"stream": True, "stream_options": {"include_usage": True},
+                            "reasoning_effort": "low", "thinking": {"type": "disabled"},
+                            "response_format": {"type": "json_object"}}}
+    return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
+                              lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),
+                              cap, args.force, args.limit)
 
 
 def chunks(messages, limit=4200):
@@ -1507,6 +1541,10 @@ def main():
     packet_run.add_argument('--files', action='store_true')
     packet_run.add_argument('--model', action='store_true', help='Use the explicitly configured model to summarize file excerpts')
     packet_run.add_argument('--force', action='store_true')
+    extract_run = commands.add_parser('extract-packets', help='Extract evidence from archived chats through the configured Eco route')
+    extract_run.add_argument('--session', action='append')
+    extract_run.add_argument('--limit', type=int, default=5)
+    extract_run.add_argument('--force', action='store_true')
     merging = commands.add_parser('merge-projects', help='Merge verified duplicates while retaining their names and IDs')
     merging.add_argument('project')
     merging.add_argument('duplicates', nargs='+')
@@ -1546,6 +1584,12 @@ def main():
             print(json_text(result), flush=True)
             if result['failed_projects']:
                 return 1
+        elif args.command == 'extract-packets':
+            if args.limit < 1:
+                raise ValueError('Set a positive extraction limit')
+            result = extract_packets(db, args)
+            print(json_text(result), flush=True)
+            return int(bool(result['failed']))
         elif args.command == 'merge-projects':
             print(json_text(merge_projects(db, args.project, args.duplicates, args.reason)))
         elif args.command == 'move-record':

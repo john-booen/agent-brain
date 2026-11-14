@@ -215,6 +215,41 @@ class PacketTest(unittest.TestCase):
         self.assertLessEqual(len(brain.json_text(log)), 1000)
         self.assertEqual(log['inputSchema']['required'], ['project', 'summary'])
 
+    def test_model_extraction_uses_evidence_and_reuses_unchanged_session(self):
+        sid = 'codex:fictional-model'
+        brief = self.root / 'Atlas brief.md'
+        report = self.root / 'Atlas report.md'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', f'Atlas source: {brief}\n<file_contents>PRIVATE_FILE_BODY</file_contents>'),
+            ('user', 'Use the conservative range for external versions.'),
+            ('assistant', f'Delivered [{report.name}]({report}).'),
+            ('user', 'I accept the Atlas report as final.'),
+        ])
+        project = self.tool('log_work', project='Atlas', create_project=True, summary='Atlas handoff.',
+                            source='codex', session_id=sid)['project_id']
+        answer = {'projects': [{
+            'id': project, 'ordinal': 2, 'summary': 'Atlas report delivered.',
+            'inputs': [{'path': str(brief), 'ordinal': 0}],
+            'deliverables': [{'path': str(report), 'task': 'Report', 'ordinal': 2, 'final': True, 'confirmation': 3},
+                             {'path': str(self.root / 'invented.md'), 'task': 'Other', 'ordinal': 2}],
+            'rules': [{'quote': 'Use the conservative range', 'scope': '对外版本', 'topic': 'figures', 'ordinal': 1},
+                      {'quote': 'Delivered', 'scope': '项目', 'topic': 'false', 'ordinal': 2}],
+            'todos': [],
+        }]}
+        with patch.object(brain, 'model', return_value=answer) as model:
+            stats = brain.extraction.process(self.db, self.data, [sid], brain.visible, brain.packet.paths_in,
+                                             brain.json_text, brain.clean, model, 20000)
+            self.assertEqual((stats['processed'], stats['rejected']), (1, 2))
+            self.assertNotIn('PRIVATE_FILE_BODY', model.call_args.args[0][1]['content'])
+            stats = brain.extraction.process(self.db, self.data, [sid], brain.visible, brain.packet.paths_in,
+                                             brain.json_text, brain.clean, model, 20000)
+            self.assertEqual(stats['cached'], 1)
+            self.assertEqual(model.call_count, 1)
+        card = self.tool('get_project', project='Atlas')
+        self.assertEqual(card['evidence'], '模型核对')
+        self.assertIn('用户确认', self.tool('get_project', project='Atlas', section='deliverables')['card'])
+        self.assertIn('Use the conservative range', self.tool('get_project', project='Atlas', section='rules')['card'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

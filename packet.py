@@ -10,7 +10,7 @@ from pathlib import Path
 import file_text
 
 
-VERSION = 19
+VERSION = 20
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -374,7 +374,25 @@ def finish_entries(inputs, deliveries, rules, approvals):
             'rules': current[:10], 'history': history}
 
 
-def build(rows, versions, index, visible, clean, names, project_terms_by_session):
+def add_extracted(project, row, versions, inputs, deliveries, rules, todos):
+    cwd = versions[row['session_id']][1]
+    for item in project['inputs']:
+        ref = citation(row, item['ordinal'])
+        inputs.append(entry(available_path(item.get('path'), cwd), ref, text=item.get('text'), modeled=True))
+    for item in project['deliverables']:
+        ref = citation(row, item['ordinal'])
+        path = available_path(item.get('path'), cwd)
+        confirmation = item.get('confirmation')
+        deliveries.append(entry(path, ref, task=item['task'], text=item.get('text'), explicit_task=True,
+                                final=item['final'], pinned=confirmation is not None, modeled=True,
+                                description=item.get('description'),
+                                approval=citation(row, confirmation) if confirmation is not None else None,
+                                status='用户确认' if confirmation is not None else '已交付' if item['final'] else '草稿'))
+    rules.extend({**item, 'ref': citation(row, item['ordinal']), 'modeled': True} for item in project['rules'])
+    todos.extend({**item, 'ref': citation(row, item['ordinal']), 'modeled': True} for item in project['todos'])
+
+
+def build(rows, versions, index, visible, clean, names, project_terms_by_session, extracted=None, project_id=None):
     inputs, deliveries, rules, approvals = [], [], [], []
     sessions = defaultdict(list)
     delivery_by_name = defaultdict(set)
@@ -382,10 +400,21 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
     terms = set().union(*(project_terms(name) for name in names))
     folders = set()
     user_attached = set()
+    todos = []
+    modeled_sessions = set()
+    extracted = extracted or {}
     for row in rows:
         data = json.loads(row['data'])
         sid = row['session_id']
         cwd = versions.get(sid, ('', None))[1]
+        if sid in extracted:
+            if sid not in modeled_sessions:
+                for project in extracted[sid]:
+                    if project['id'] == project_id:
+                        add_extracted(project, row, versions, inputs, deliveries, rules, todos)
+                modeled_sessions.add(sid)
+            if row['kind'] == 'summary':
+                continue
         if sid in versions and not (IRRELEVANT.search(data['summary']) and not data.get('files')):
             sessions[sid].append((row, data))
         for item in data.get('inputs', []):
@@ -415,6 +444,8 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
 
     raw_inputs, outputs, reused = set(), set(), set()
     for sid, project_rows in sessions.items():
+        if sid in extracted:
+            continue
         row = project_rows[0][0]
         _, cwd, title, name = versions[sid]
         focused = (matches_project((title or '') + ' ' + (name or ''), terms)
@@ -527,14 +558,22 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
                   (Path(item['path']).suffix and (item.get('explicit_task') or item.get('final')
                    or item['path'] not in user_attached or item.get('status') != '用户确认'
                    or '终版' in Path(item['path']).stem))]
-    return finish_entries(inputs, deliveries, rules, approvals)
+    result = finish_entries(inputs, deliveries, rules, approvals)
+    result['extraction'] = '混合' if modeled_sessions and set(versions) - modeled_sessions else '模型核对' if modeled_sessions else '规则推断'
+    result['model_todos'] = todos
+    return result
 
 
 def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     rows = work_rows(db, project_id)
+    session_ids = {row['session_id'] for row in rows if row['session_id']}
+    extracted_rows = [row for row in db.execute(
+        'SELECT session_id, revision, extracted_at FROM packet_extractions WHERE session_id IN (%s)' %
+        ','.join('?' for _ in session_ids), tuple(sorted(session_ids)))] if session_ids else []
     previous = db.execute('SELECT data, signature FROM project_packets WHERE project_id=?', (project_id,)).fetchone()
     relocations = {row[0]: row[1] for row in db.execute('SELECT old_path,path FROM packet_path_relocations ORDER BY old_path')}
-    work_signature = hashlib.sha256(json.dumps([VERSION, [tuple(row) for row in rows], relocations], ensure_ascii=False).encode()).hexdigest()
+    work_signature = hashlib.sha256(json.dumps([VERSION, [tuple(row) for row in rows], relocations,
+                                                [tuple(row) for row in extracted_rows]], ensure_ascii=False).encode()).hexdigest()
     if lazy and previous and not force:
         if previous['signature'].startswith(work_signature + ':'):
             return json.loads(previous['data']), False
@@ -544,7 +583,7 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         if index:
             index.row_factory = sqlite3.Row
             index.execute('BEGIN')
-        sessions = {row['session_id'] for row in rows if row['session_id']}
+        sessions = session_ids
         versions = source_versions(index, sessions)
         names = [row[0] for row in db.execute('SELECT name FROM projects WHERE id=? UNION SELECT alias FROM project_aliases WHERE project_id=?',
                                              (project_id, project_id))]
@@ -560,7 +599,22 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
                 terms = project_terms(row[0]) - own_terms
                 if terms:
                     alternatives[sid].append(terms)
-        result = build(rows, versions, index, visible, clean, names, alternatives)
+        extracted = {}
+        for item in extracted_rows:
+            sid = item['session_id']
+            if sid not in versions:
+                continue
+            raw = db.execute('SELECT data FROM packet_extractions WHERE session_id=?', (sid,)).fetchone()[0]
+            value = json.loads(raw)
+            if value.get('archive_revision') == versions[sid][0]:
+                for project in value['projects']:
+                    resolved = project['id']
+                    while resolved and (redirect := db.execute('SELECT project_id FROM project_redirects WHERE old_id=?',
+                                                               (resolved,)).fetchone()):
+                        resolved = redirect[0]
+                    project['id'] = resolved
+                extracted[sid] = value['projects']
+        result = build(rows, versions, index, visible, clean, names, alternatives, extracted, project_id)
         for key in ('inputs', 'deliverables', 'history'):
             paths = set()
             items = []

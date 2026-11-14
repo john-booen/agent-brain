@@ -4,6 +4,8 @@
 !/README.zh-CN.md
 !/brain.py
 !/packet.py
+!/extraction.py
+!/evaluation.py
 !/file_text.py
 !/collect.mjs
 !/skills/
@@ -13,6 +15,7 @@
 !/examples/demo.json
 !/examples/demo.svg
 !/examples/config.example.json
+!/examples/eval.fictional.json
 !/scripts/
 !/scripts/demo.py
 !/tests/
