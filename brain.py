@@ -332,12 +332,40 @@ def read_session_excerpt(session_id, start, limit, around=None):
             'status':'ok' if messages else '内容不全'}
 
 
-def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, ordinal=None):
+def keyword_message_excerpt(result, row, contains, offset, fits):
+    text = row["text"]
+    pattern = re.compile(re.escape(contains), re.IGNORECASE)
+    context_end = offset
+    for match in pattern.finditer(text, offset):
+        if match.end() <= context_end:
+            continue
+        lower = max(0, match.start() - 80)
+        upper = min(len(text), match.end() + 90)
+        snippet = {**row, "text": text[lower:upper], "text_offset": lower, "match_offset": match.start()}
+        candidate = {**result, "messages": [*result["messages"], snippet], "next_text_offset": len(text)}
+        if len(result["messages"]) >= 3 or not fits(candidate):
+            if result["messages"]:
+                result["next_text_offset"] = match.start()
+                break
+            snippet.update(text=match.group(), text_offset=match.start())
+            upper = match.end()
+            if not fits(candidate):
+                raise ValueError("Keyword excerpt exceeds the query budget")
+        result["messages"].append(snippet)
+        context_end = upper
+    if not result["messages"]:
+        result["status"] = "没命中"
+    return result
+
+
+def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, ordinal=None, contains=None):
     if around is not None and (start or text_offset):
         raise ValueError("Use around for a new lookup, or start and text_offset to continue")
     exact = ordinal is not None
     if exact and (around is not None or start):
         raise ValueError("Use ordinal with text_offset to read a single message")
+    if contains is not None and (not exact or not contains.strip()):
+        raise ValueError("Use a nonempty keyword with an exact message ordinal")
     if exact:
         archived = read_session_excerpt(session_id, 0, 1, ordinal)
         messages = [{key: row[key] for key in ("ordinal", "role", "text")}
@@ -371,6 +399,9 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, o
 
     def fits(value):
         return count(json_text(value)) <= EXACT_MESSAGE_TOKENS if count else response_size(value) <= QUERY_BYTES
+
+    if contains is not None:
+        return keyword_message_excerpt(result, messages[0], contains.strip(), text_offset, fits) if messages else result
 
     # The source path can be recovered from the archived session metadata.
     if result.get("path"):
@@ -1684,14 +1715,14 @@ TOOLS = {
     "get_project": ("Read a project card or section.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
-    "recall": ("Find past work evidence.",
+    "recall": ("Find past evidence.",
                {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180},
                 "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
     "search": ("Search dialogue.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
-    "get_session": ("Read exact or nearby messages.",
+    "get_session": ("Read archived messages.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "ordinal": OFFSET,
-                     "text_offset": OFFSET,
+                     "text_offset": OFFSET, "contains": {**STRING, "maxLength": 120},
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
     'read_file': ('Read and verify a registered file.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},

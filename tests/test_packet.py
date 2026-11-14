@@ -1508,6 +1508,34 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             missing = self.tool('get_session',session_id=sid,ordinal=3)
             self.assertEqual((missing['status'],missing['messages']),('没命中',[]))
 
+    def test_get_session_keyword_finds_literal_text_deep_in_one_message(self):
+        sid = 'codex:fictional-keyword'
+        original = ('Long background. ' * 800).join('Setting [Interval] = ' + str(n) for n in range(5))
+        self.archive_messages(sid, 'Atlas', [('assistant',original),('user','A different message: OtherSetting.')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent','file_path','ended_at','deleted_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+        with patch.object(brain,'archive',side_effect=RuntimeError('Query service unavailable')), \
+             patch.object(brain.usage,'token_counter',return_value=None):
+            results,offset = [],0
+            while True:
+                page = self.tool('get_session',session_id=sid,ordinal=0,contains='[interval]',text_offset=offset)
+                self.assertLessEqual(brain.response_size(page),brain.QUERY_BYTES)
+                self.assertTrue(page['messages'])
+                results.extend(page['messages'])
+                if 'next_text_offset' not in page:
+                    break
+                self.assertGreater(page['next_text_offset'],offset)
+                offset = page['next_text_offset']
+            self.assertEqual(len(results),5)
+            self.assertTrue(all(row['ordinal']==0 and '[Interval]' in row['text'] for row in results))
+            self.assertGreater(results[-1]['match_offset'],40_000)
+            self.assertIn('[Interval] = 4',results[-1]['text'])
+            missing = self.tool('get_session',session_id=sid,ordinal=0,contains='OtherSetting')
+            self.assertEqual((missing['status'],missing['messages']),('没命中',[]))
+            with self.assertRaisesRegex(ValueError,'exact message ordinal'):
+                self.tool('get_session',session_id=sid,contains='Interval')
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:
