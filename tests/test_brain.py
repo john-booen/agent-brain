@@ -101,7 +101,9 @@ class BrainTest(unittest.TestCase):
         card = brain.call_tool(self.db, "get_project", {"project": "Fictional Atlas"})["card"]
         self.assertIn("fictional.md", card)
         self.assertNotIn("invented.md", card)
-        self.assertIn("kimi-work:fictional#1", card)
+        self.assertIn("kimi-work 2030-01-01", card)
+        detailed = brain.get_project(self.db, "Fictional Atlas", section="deliverables")["card"]
+        self.assertIn("kimi-work:fictional#1", detailed)
 
     def test_reconcile_two_names_for_the_same_project(self):
         payload = {"reason": "Both messages discuss the same release."}

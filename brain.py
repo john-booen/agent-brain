@@ -560,27 +560,40 @@ def short_entry(entry, max_bytes):
     return clip_bytes(text or entry, max_bytes - len(tail.encode("utf-8"))) + tail
 
 
+def card_entry(entry):
+    text, separator, reference = entry.rpartition(" — ")
+    if not separator:
+        return entry
+    source, _, stamp = reference.partition(" · ")
+    _, _, day = stamp.rpartition(" · ")
+    return f"{text} — {source} {day[:10]}"
+
+
 def project_overview(project, sections, extraction_method='规则推断'):
     result = project_index_entry(project)
     result.update(packet_coverage())
     result['evidence'] = extraction_method
     result["sections"] = [key for key, items in sections.items() if items]
     status = sections["timeline"][0][2:] if sections["timeline"] else "待补记录"
-    groups = (("deliverables", 2, 245), ("inputs", 2, 185), ("rules", 2, 210), ("todos", 2, 190),
-              ("blockers", 1, 145), ("conclusions", 1, 175))
-    result["card"] = "现状 " + short_entry(status, 245)
-    for index in range(2):
-        for key, count, size in groups:
+    groups = (("deliverables", 5), ("inputs", 5), ("rules", 8), ("todos", 4), ("blockers", 1), ("conclusions", 1))
+    sentences = re.split(r'(?<=[。！？])\s*|\n+', card_entry(status))
+    result["card"] = "现状"
+    for sentence in sentences[:2]:
+        value = result["card"] + " " + sentence.strip()
+        if len(value.encode("utf-8")) <= 320:
+            result["card"] = value
+    if result["card"] == "现状":
+        result["card"] += " 见时间线"
+    result["next"] = "按需展开分区"
+    for index in range(max(count for _, count in groups)):
+        for key, count in groups:
             items = sections.get(key, [])
             if index >= count or index >= len(items):
                 continue
-            item = items[index]
+            item = card_entry(items[index])
             prefix = PROJECT_DETAIL_SECTIONS[key] + " "
-            remaining = PROJECT_CARD_BYTES - response_size(result) - len(prefix.encode("utf-8")) - 12
-            if remaining < 90:
-                continue
             old_card = result["card"]
-            result["card"] += "\n" + prefix + short_entry(item, min(size, remaining))
+            result["card"] += "\n" + prefix + item
             if response_size(result) > PROJECT_CARD_BYTES:
                 result["card"] = old_card
     return result
@@ -648,6 +661,9 @@ def packet_item(db, item, kind, compact=False):
         title = Path(value).name if compact else value
         summary = packet.file_summary(db, value)
         description = item.get('description') or summary
+        if compact and description and len(description.encode('utf-8')) > 260:
+            description = next((sentence for sentence in re.split(r'(?<=[。！?！？])\s*|\n+', description)
+                                if sentence.strip() and len(sentence.encode('utf-8')) <= 260), '')
         detail = '，' + description if description else ''
         if not compact:
             if not Path(value).is_absolute():
