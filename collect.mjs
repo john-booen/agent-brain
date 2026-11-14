@@ -192,6 +192,32 @@ async function main() {
   finally { await lock.close(); await fs.unlink(lockPath); }
 }
 
+async function copyStable(source, target, stats, cliSessionId) {
+  for (let attempt = 0; ; attempt++) {
+    const before = await fs.stat(source);
+    const fingerprint = [stagingVersion, before.size, before.mtimeMs, before.ino, ...(cliSessionId ? [cliSessionId] : [])].join(':');
+    const fileStats = { skippedLines: 0 };
+    if (source.endsWith('.json')) {
+      const original = JSON.parse(await fs.readFile(source, 'utf8'));
+      const { title, userSelectedFolders } = original;
+      const content = cliSessionId ? { cliSessionId, title, userSelectedFolders } : original;
+      await fs.writeFile(target + '.tmp', JSON.stringify(scrub(content)), { mode: 0o600 });
+    } else {
+      await copyTranscript(source, target, fileStats);
+    }
+    const after = await fs.stat(source);
+    if (before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs) {
+      await fs.rename(target + '.tmp', target);
+      stats.skippedLines += fileStats.skippedLines;
+      stats.prepared++;
+      return { source, fingerprint, skippedLines: fileStats.skippedLines };
+    }
+    if (attempt || !source.endsWith('.jsonl')) {
+      throw Object.assign(new Error('source changed during collection'), { code: 'SOURCE_CHANGED' });
+    }
+  }
+}
+
 async function collect() {
   const archive = join(data, 'agentsview');
   const manifestPath = join(data, 'sources.json');
@@ -310,24 +336,8 @@ async function collect() {
           stats.skippedLines += previous[key].skippedLines || 0;
           continue;
         }
-        const fileStats = { skippedLines: 0 };
         await fs.mkdir(dirname(target), { recursive: true, mode: 0o700 });
-        if (source.endsWith('.json')) {
-          const original = JSON.parse(await fs.readFile(source, 'utf8'));
-          const { title, userSelectedFolders } = original;
-          const content = cliSessionId ? { cliSessionId, title, userSelectedFolders } : original;
-          await fs.writeFile(target + '.tmp', JSON.stringify(scrub(content)), { mode: 0o600 });
-        } else {
-          await copyTranscript(source, target, fileStats);
-        }
-        const after = await fs.stat(source);
-        if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
-          throw Object.assign(new Error('source changed during collection'), { code: 'SOURCE_CHANGED' });
-        }
-        await fs.rename(target + '.tmp', target);
-        manifest[key] = { source, fingerprint, skippedLines: fileStats.skippedLines };
-        stats.skippedLines += fileStats.skippedLines;
-        stats.prepared++;
+        manifest[key] = await copyStable(source, target, stats, cliSessionId);
       } catch (error) {
         if (previous[key]) manifest[key] = previous[key];
         await fs.rm(target + '.tmp', { force: true });
@@ -427,14 +437,17 @@ async function collect() {
       await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
     }
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' }).format(new Date());
-    if (process.env.AGENT_BRAIN_DAILY_HEALTH === '1' && priorReport.lastHealthCheck !== day) {
+    if (process.env.AGENT_BRAIN_DAILY_HEALTH === '1') {
       let failure;
-      try { failure = await localTask(['health', '--backup']); }
+      const daily = priorReport.lastHealthCheck !== day;
+      try { failure = await localTask(['health', '--update-todo', todoPath, ...(daily ? ['--backup'] : [])]); }
       catch (error) { failure = error.code || 'spawn error'; }
       if (!failure) report.lastHealthCheck = day;
       else process.exitCode = 1;
-      await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'daily_health', day, status: failure ? 'failed' : 'ok' }) + '\n');
-      await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
+      if (daily || failure) {
+        await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'daily_health', day, status: failure ? 'failed' : 'ok' }) + '\n');
+        await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
+      }
     }
     if (process.env.AGENT_BRAIN_WEEKLY === '1' && priorReport.weeklyGeneratedOn !== day &&
         new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date()) === 'Mon') {

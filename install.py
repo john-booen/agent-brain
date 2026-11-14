@@ -75,8 +75,9 @@ def self_check(data):
     env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'AGENT_BRAIN_DATA': data, 'AGENT_BRAIN_USAGE_ORIGIN': 'test'}
     result = subprocess.run([COMMAND, '-B', *ARGS], text=True, input='{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
                             env=env, stdout=subprocess.PIPE, check=True, timeout=20)
-    if len(json.loads(result.stdout)['result']['tools']) != 7:
-        raise ValueError('The local MCP server did not advertise all seven tools')
+    from brain import TOOLS
+    if {tool['name'] for tool in json.loads(result.stdout)['result']['tools']} != set(TOOLS):
+        raise ValueError('The local MCP server did not advertise the expected tools')
     print('Local MCP self-check passed.')
 
 

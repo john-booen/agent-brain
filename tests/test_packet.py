@@ -269,7 +269,7 @@ class PacketTest(unittest.TestCase):
 
     def test_advertised_mcp_tools_fit_the_schema_budget(self):
         tools = brain.mcp_tools()
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 8)
         self.assertLessEqual(len(brain.json_text({'tools': tools})), 3000)
         log = next(tool for tool in tools if tool['name'] == 'log_work')
         self.assertLessEqual(len(brain.json_text(log)), 1000)
@@ -445,6 +445,49 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual(model.call_count, 1)
         self.assertIn('模型提取', self.tool('get_project', project='Atlas')['coverage'])
         self.assertIn('模型提取', self.tool('list_projects')['coverage'])
+
+    def test_recall_charges_once_checks_citations_and_falls_back(self):
+        sid = 'codex:fixture-recall'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', 'Use a plain-text daily schedule. <file_contents>PRIVATE_BODY</file_contents>'),
+            ('assistant', 'I am working on it.'),
+            ('assistant', 'Delivered [Atlas report](/tmp/atlas.md).\n\n# ORIGINAL_FILE_BODY'),
+            ('assistant', '已落盘 [Atlas notes](/tmp/notes.md)，有 12 条要点、15 句口径；“PRIVATE_QUOTE”'),
+            ('user', '[Reply from imported agent] PRIVATE_AGENT_REPLY'),
+        ])
+        settings = {'enabled': True, 'url': 'http://127.0.0.1:3425/v1', 'name': brain.eco.MODEL}
+        (self.data / 'config.json').write_text(json.dumps({'eco': settings}))
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            for col in ('deleted_at', 'first_message', 'relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN ' + col + ' TEXT')
+        self.tool('log_work', project='Atlas', create_project=True, summary='Prepared the schedule.', source='codex', session_id=sid)
+
+        def gateway(messages, **kwargs):
+            self.assertNotIn('PRIVATE_BODY', str(messages))
+            self.assertNotIn('ORIGINAL_FILE_BODY', str(messages))
+            self.assertNotIn('working on it', str(messages))
+            self.assertNotIn('PRIVATE_QUOTE', str(messages))
+            self.assertNotIn('PRIVATE_AGENT_REPLY', str(messages))
+            self.assertIn('15 句口径', str(messages))
+            kwargs['on_usage']({'prompt_tokens': 1000, 'completion_tokens': 500})
+            return {'claims': [
+                {'ref': '1:2', 'quote': 'Delivered', 'kind': 'deliverable', 'text': 'Atlas report',
+                 'path': '/tmp/atlas.md'},
+                {'ref': '1:0', 'quote': 'plain-text daily schedule', 'kind': 'rule', 'text': 'Use a plain-text daily schedule.'},
+                {'ref': '1:999', 'quote': 'invented', 'kind': 'answer', 'text': 'Unverified.'},
+            ]}
+        with patch.object(brain, 'model', side_effect=gateway) as model:
+            answer = self.tool('recall', project='Atlas', question='Which report is done?')
+            self.assertEqual((answer['level'], len(answer['evidence'])), (1, 2))
+            self.assertTrue(self.tool('recall', project='Atlas', question='Which report is done?')['cached'])
+            self.assertEqual(model.call_count, 1)
+        self.assertEqual(brain.eco.snapshot(self.db, settings)['24h']['used_or_reserved'], 9)
+        self.db.execute("INSERT INTO recall_segments VALUES(?,0,2,'revision','now',?)", (sid,
+            json.dumps({'summary':'Atlas schedule handoff','tags':['Atlas'],'anchors':[2]})))
+        self.db.commit()
+        with patch.object(brain, 'model', side_effect=OSError('offline')):
+            answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
+        self.assertEqual((answer['level'], answer['evidence'][0]['ordinal']), (3, 2))
 
     def test_busy_database_reports_error_and_accepts_retry_after_unlock(self):
         args = dict(project='Atlas', create_project=True, source='codex', summary='Fictional handoff.', work_id='lock')

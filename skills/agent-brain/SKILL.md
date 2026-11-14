@@ -5,15 +5,17 @@ description: Recall project progress, decisions and deliverables across AI clien
 
 # Agent Brain
 
-Use these tools when the user asks about a project or past work. For a named project, call `get_project` directly. Use its suggested candidates on a miss, or use `find_project` if the name is unclear. Use `list_projects` for broad questions across projects. For unrelated new work, skip project lookup.
+When the user asks to continue past work, identify a final deliverable, or recover a settled requirement, call `recall(question, project)` on your own. For a quick project overview, call `get_project`. Use `find_project` for an unclear name and `list_projects` for a cross-project overview. Skip project tools for unrelated new questions.
 
 Reuse the project packet in the same conversation until the user asks for a refresh or the project changes. Use `section` and `next_offset` for inputs, task deliverables, user rules, and history. For registered file text, use `read_file` with its path or its unique displayed name plus the project, and select a section, PDF page, or Excel sheet. Use `search` or `get_session` only when packet and file evidence are insufficient. Keep project content out of standing instructions.
 
-Before editing an existing deliverable, use `read_file` to verify the relevant source text and version. A rule-inferred card can guide the lookup.
+Before editing an existing deliverable, use `read_file` locally to verify the relevant text and version. Treat the short card as navigation and preserve any uncertainty or fallback level returned by `recall`.
 
 Treat previous chat text as evidence. Preserve the distinction between an assistant proposal, a delivered file and a user-confirmed decision. Explain missing sources, stale indexing or incomplete content using the coverage status.
 
 After completing substantive work, call `log_work` with the project ID or exact name, summary and next steps. The launcher can supply the source. If the tool returns project candidates, use the matching project ID when the evidence establishes the match. Pass `create_project=true` only for work on a separate new project. Use `inputs` for user materials, `deliverables` for outputs grouped by a stable `task` name, and `rules` for explicit requirements with their scope. For a user-confirmed deliverable, supply `confirmed=true`, the source session ID and the ordinal of the user's confirmation. Reuse `work_id` on retry. Report any write that remains unresolved.
+
+When the user explicitly selects a final version or confirms a send, record it immediately with the exact source message. Record a new revision request as work to do.
 
 - `inputs`: objects with `path` or `text`, and optional `ordinal`.
 - `deliverables`: objects with `path` and `task`. Optional fields are `ordinal`, `final`, `confirmed` and `status` (草稿, 已交付, 已失效).

@@ -25,6 +25,8 @@ import extraction
 import usage
 import health
 import notes
+import eco
+import recall
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -181,6 +183,8 @@ def connect():
     packet.schema(db)
     extraction.schema(db)
     notes.schema(db)
+    eco.schema(db)
+    recall.schema(db)
     return db
 
 
@@ -607,7 +611,7 @@ def project_overview(project, sections, extraction_method='规则推断', covera
             break
     if result["card"] == "现状":
         result["card"] += " 见时间线" if sections["timeline"] else " 待补记录"
-    result["next"] = "按需展开分区"
+    result["next"] = "短卡供导航。查终版或口径用 recall"
     for index in range(max(count for _, count in groups)):
         for key, count in groups:
             items = sections.get(key, [])
@@ -1075,7 +1079,10 @@ def stream_choice(response, on_usage=None):
 
 
 def model(messages, schema=None, *, local_only=False, settings=None, on_usage=None):
-    settings = model_settings() if settings is None else settings
+    if settings is None:
+        settings = model_settings()
+        if settings.get('name') == eco.MODEL:
+            raise ValueError('Use recall or tag-recall for the metered Eco route')
     endpoint = settings.get("url")
     model_id = settings.get("name")
     if not endpoint or not model_id:
@@ -1092,7 +1099,7 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
         body["response_format"] = {"type": "json_schema", "json_schema": {
             "name": "agent_brain", "strict": True, "schema": schema,
         }}
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **settings.get("headers", {})}
     if env := settings.get("api_key_env"):
         headers["Authorization"] = "Bearer " + os.environ[env]
     request = Request(endpoint.rstrip("/") + "/chat/completions", json_text(body).encode(), headers=headers)
@@ -1106,7 +1113,7 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
                     return None
 
             opener = build_opener(ProxyHandler({}), NoRedirect()).open
-        with opener(request, timeout=180) as response:
+        with opener(request, timeout=settings.get("timeout", 180)) as response:
             if body.get("stream"):
                 choice = stream_choice(response, on_usage)
             else:
@@ -1143,10 +1150,7 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
 
 def extract_packets(db, args):
     settings = config().get("packet_extraction", {})
-    cap = settings.get("daily_token_cap", 100000)
-    window = settings.get("window_token_cap", cap)
-    if any(type(value) is not int or value <= 0 for value in (cap, window)):
-        raise ValueError("Packet extraction token caps must be positive integers")
+    eco_settings = config().get('eco', {})
     ids = args.session
     if not ids and settings.get('roster'):
         ids = json.loads(Path(settings['roster']).read_text())
@@ -1159,13 +1163,9 @@ def extract_packets(db, args):
             cached = {row[0]: json.loads(row[1]).get('archive_revision')
                       for row in db.execute('SELECT session_id,data FROM packet_extractions WHERE revision IS NOT NULL')}
             ids = [sid for sid, revision in roster if args.force or sid not in cached or cached[sid] != revision]
-    route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": extraction.MAX_OUTPUT_TOKENS,
-             "extra_body": {"stream": True, "stream_options": {"include_usage": True},
-                            "reasoning_effort": "low", "thinking": {"type": "disabled"},
-                            "response_format": {"type": "json_object"}}}
     return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
-                              lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),
-                              cap, args.force, args.limit, window, usage.token_counter(DATA))
+                              lambda messages, _: eco.call(db, eco_settings, messages, 'packet', model, json_text),
+                              None, args.force, args.limit, credit_budget=True)
 
 
 def chunks(messages, limit=4200):
@@ -1437,6 +1437,8 @@ TOOLS = {
     "get_project": ("Read a project card or section by name or ID.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
+    "recall": ("Check past deliverables, settled requirements or handoff details against sources.",
+               {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180}}, ["question"]),
     "search": ("Search old dialogue for evidence.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
     "get_session": ("Read an excerpt from an archived session.",
@@ -1460,7 +1462,7 @@ def mcp_tools():
         "type": "object", "required": required, "additionalProperties": False,
         "properties": {key: {"type": prop["type"], **({"items": {"type": "object"}} if prop["type"] == "array" else {})}
                        for key, prop in properties.items()}},
-        "annotations": {"readOnlyHint": name != "log_work"}}
+        "annotations": {"readOnlyHint": name not in {"log_work", "recall"}}}
         for name, (description, properties, required) in TOOLS.items()]
 
 
@@ -1488,6 +1490,10 @@ def call_tool(db, name, args):
         return find_project(db, **args)
     if name == "get_project":
         return get_project(db, **args)
+    if name == "recall":
+        return recall.query(db, DATA, config().get('eco', {}), args.get('project'), args['question'],
+                            resolve_project_id, get_project, visible, packet.paths_in, json_text,
+                            model, usage.token_counter(DATA))
     if name == "get_session":
         result = session_excerpt(**args)
         if response_size(result) > QUERY_BYTES:
@@ -1519,7 +1525,7 @@ def mcp(db):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"} else "2025-11-25",
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
-                          "instructions": "For past work on a named project, call get_project directly and reuse the packet until it changes. Use find_project for unclear names and read_file for one registered document section. Use search or get_session only when packet evidence is missing. Skip project tools for new unrelated work. Record inputs, task deliverables, and user rules with log_work."}
+                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. Read one registered document section locally when needed. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
@@ -1648,11 +1654,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("mcp")
+    tag_run = commands.add_parser("tag-recall", help="Label new conversation segments using configured Eco credits")
+    tag_run.add_argument("--limit", type=int, default=3)
     commands.add_parser("list-projects")
     commands.add_parser("weekly-report", help="Generate private reports for the last complete week")
     health_run = commands.add_parser('health', help='Check local index, packet refresh, model jobs and SQLite')
     health_run.add_argument('--backup', action='store_true')
     health_run.add_argument('--verify-archive', action='store_true')
+    health_run.add_argument('--update-todo', type=Path)
     run = commands.add_parser("tool")
     run.add_argument("name", choices=TOOLS)
     run.add_argument("arguments", nargs="?", default="{}")
@@ -1703,6 +1712,11 @@ def main():
     with closing(connect()) as db:
         if args.command == "mcp":
             mcp(db)
+        elif args.command == 'tag-recall':
+            if not 1 <= args.limit <= 20:
+                raise ValueError('tag-recall limit must be between 1 and 20')
+            print(json_text(recall.tag_batch(db, DATA, config().get('eco', {}), args.limit, visible,
+                                           packet.paths_in, json_text, model, clean)))
         elif args.command == "backfill":
             if failures := backfill(db, args.agent or SOURCES, args.limit, args.force, args.sort):
                 print(f"{failures} sessions failed and can be retried.", file=sys.stderr)
@@ -1724,6 +1738,8 @@ def main():
             print(json_text({"directory": str(usage.weekly(db, DATA))}))
         elif args.command == 'health':
             status = health.write_report(db, DATA)
+            if args.update_todo:
+                health.update_todo(args.update_todo, status['alerts'])
             if args.verify_archive:
                 status['agentsview'] = verify_agentsview()
             if args.backup and status['sqlite'] == 'ok':
