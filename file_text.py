@@ -237,6 +237,17 @@ def extract(path, data, section=None, page=None, preview=False):
 
 
 def summary_from_parts(parts):
+    labels = [title for title, _ in parts if title != '正文' and not re.fullmatch(r'第 \d+ 页(?:（OCR）)?', title)]
+    if len(labels) >= 2:
+        headings = []
+        for label in dict.fromkeys(labels):
+            option = '包含：' + '、'.join([*headings, label])
+            if len(option) <= 180:
+                headings.append(label)
+            if len(headings) >= 4:
+                break
+        if headings:
+            return '包含：' + '、'.join(headings)
     snippets = []
     for title, text in parts:
         if title != '正文':
