@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
@@ -225,6 +226,24 @@ class PacketTest(unittest.TestCase):
         self.assertIn('Verified nested report.',value['text'])
         with self.assertRaisesRegex(ValueError,'引用'):
             self.tool('read_file',**args,ordinal=1)
+
+    def test_read_file_checks_fingerprint_before_returning_a_changed_version(self):
+        file = self.root/'report.md'
+        file.write_text('# Report\n'+'First edition. '*300)
+        self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Deliver the report.',
+                  deliverables=[{'path':str(file),'task':'Report'}])
+        args = {'project':'Atlas','path':file.name}
+        original = self.tool('read_file',**args,max_chars=100)
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        self.assertEqual(original['sha256'],digest)
+        self.assertEqual(self.tool('read_file',**args,offset=original['next_offset'],expected_sha256=digest.upper())['sha256'],digest)
+        file.write_text('# Report\nSecond edition.')
+        with patch.object(brain.file_text,'extract',side_effect=AssertionError('changed version was opened')):
+            with self.assertRaisesRegex(ValueError,'指纹已变化'):
+                self.tool('read_file',**args,expected_sha256=digest)
+        with self.assertRaisesRegex(ValueError,'64 位'):
+            self.tool('read_file',**args,expected_sha256='abc')
+        self.assertIn('Second edition.',self.tool('read_file',**args)['text'])
 
     def archive_messages(self, sid, project, messages):
         archive = self.data / 'agentsview'
@@ -938,12 +957,14 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         local=brain.recall.local_evidence({old_ref:evidence[old_ref]},brain.json_text,None)
         self.assertEqual(local['evidence'][0]['later_version'],
                          {'session':'1','ordinal':3,'reported_pages':[2,1],'reported_format_quotes':['`PAGE` 域','No footer'],
+                          'current_sha256':timeline['current']['sha256'],
                           'current_matches_reported_hash':False})
         claim = {'ref':old_ref,'text':'The initial report had two pages.','kind':'deliverable',
                  'quote':'had 2 页','path':str(version)}
         verified, = brain.recall.checked_claims({'claims':[claim]},evidence)
         self.assertEqual(verified['later_version'], {'session_id':sid,'ordinal':3,'reported_pages':[2,1],
-                         'reported_format_quotes':['`PAGE` 域','No footer'],'current_matches_reported_hash':False})
+                         'reported_format_quotes':['`PAGE` 域','No footer'],'current_matches_reported_hash':False,
+                         'current_sha256':timeline['current']['sha256']})
         self.assertNotIn(str(version),str(verified))
         other = f'{self.root}/notice.docx'
         unrelated = {**evidence[old_ref],'files':[str(version),other]}

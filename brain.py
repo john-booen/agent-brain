@@ -1111,9 +1111,11 @@ def delivery_paths(session_id, ordinal):
 
 
 def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
-                      session_id=None, ordinal=None):
+                      session_id=None, ordinal=None, expected_sha256=None):
     if section and page is not None:
         raise ValueError('每次请选择章节或页码')
+    if expected_sha256 is not None and not re.fullmatch(r'[0-9a-fA-F]{64}',expected_sha256):
+        raise ValueError('expected_sha256 需要完整的 64 位十六进制指纹')
     if session_id is not None or ordinal is not None:
         if not project or not session_id or ordinal is None:
             raise ValueError('按原文定位文件时，请一并提供项目、会话 ID 和消息号')
@@ -1174,9 +1176,12 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         raw = file_text.read_bytes(file)
     except OSError as exc:
         raise ValueError('登记文件在本机不可用') from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 is not None and digest!=expected_sha256.lower():
+        raise ValueError('文件指纹已变化，请重新核对版本后再读取')
     parts = file_text.extract(file, raw, section=section, page=page)
     body = clean('\n\n'.join(title + '\n' + text for title, text in parts)).strip()
-    result = {'file': clip_bytes(file.name, 230), 'text': '', 'next_offset': None}
+    result = {'file': clip_bytes(file.name, 230), 'sha256':digest, 'text': '', 'next_offset': None}
     if not body:
         return {**result, 'status': '未提取到文本'}
     low, high = 0, min(max_chars, max(0, len(body) - offset))
@@ -1622,19 +1627,20 @@ TOOLS = {
     "get_project": ("Read a project card or section.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
-    "recall": ("Find project evidence and past deliverables.",
+    "recall": ("Find past work evidence.",
                {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180},
                 "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
-    "search": ("Search old dialogue for evidence.",
+    "search": ("Search dialogue.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
     "get_session": ("Read an archived session excerpt.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "text_offset": OFFSET,
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
-    'read_file': ('Read a registered file by name, path or delivery reference.',
+    'read_file': ('Read a registered file and check its version.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
                    'session_id': {**STRING, 'maxLength': 350}, 'ordinal': {**OFFSET, 'maximum': 2**63 - 1},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
-                   'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET}, ['path']),
+                   'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET,
+                   'expected_sha256': {**STRING, 'maxLength': 64}}, ['path']),
     "log_work": ("Record completed project work.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
                   "session_id": STRING, "work_id": STRING, "create_project": {"type": "boolean"},

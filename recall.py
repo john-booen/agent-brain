@@ -480,6 +480,7 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
                     local_versions[ref] = {'session_id':latest_row['session_id'],'ordinal':latest_row['ordinal'],
                                            'reported_pages':[pages,after],
                                            'file_reference':record['path'],
+                                           'current_sha256':current['sha256'],
                                            'current_matches_reported_hash':(
                                                current['sha256']==last[1]['sha256'] if last[1].get('sha256') else None)}
                     formats = [record.get('reported_format_quote'),last[1].get('reported_format_quote')]
@@ -727,6 +728,8 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
             later_ref = session_refs.setdefault(later_sid,str(len(session_refs)+1))
             item['later_version'] = {'session':later_ref,'ordinal':later['ordinal'],
                                      'reported_pages':later['reported_pages']}
+            if later.get('current_sha256'):
+                item['later_version']['current_sha256'] = later['current_sha256']
             if later.get('reported_format_quotes'):
                 item['later_version']['reported_format_quotes'] = later['reported_format_quotes']
             if later['current_matches_reported_hash'] is not None:
