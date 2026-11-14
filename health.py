@@ -22,6 +22,14 @@ def read_json(path):
         return {}
 
 
+def collection_state(info):
+    failures = info.get('failed') or 0
+    changing = (info.get('failureReasons') or {}).get('SOURCE_CHANGED', 0)
+    if (failures > changing or any(info.get(key) for key in ('syncIncomplete','skippedLines','parserFailed'))):
+        return 'partial'
+    return 'retry' if failures else 'ok'
+
+
 def report(db, directory):
     coverage = read_json(directory / 'coverage.json')
     boundary = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec='seconds')
@@ -32,9 +40,10 @@ def report(db, directory):
                         'source_files_found': info.get('found', 0),
                         'files_updated': info.get('prepared', 0),
                         'file_failures': info.get('failed', 0),
+                        'files_waiting_for_retry': (info.get('failureReasons') or {}).get('SOURCE_CHANGED', 0),
                         'skipped_lines': info.get('skippedLines', 0),
                         'failure_reasons': info.get('failureReasons', {}),
-                        'incomplete': any(info.get(key) for key in ('syncIncomplete', 'failed', 'skippedLines'))}
+                        'incomplete': collection_state(info)=='partial'}
                for source, info in coverage.get('sources', {}).items()}
     archive = directory / 'agentsview' / 'sessions.db'
     queue = {'pending': 0, 'oldest': None}
@@ -54,7 +63,10 @@ def report(db, directory):
                 if files.get('transcripts_without_index'):
                     status['incomplete'] = True
             for source, item in recent_transcripts(index, directory, boundary).items():
-                sources.setdefault(source, {}).update(item)
+                status = sources.setdefault(source, {})
+                status.update(item)
+                if item.get('message_gap_over_15m') or item.get('source_modified_over_15m_after_latest_index'):
+                    status['incomplete'] = True
             if index.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone():
                 for _, _, _, first in recall.pending_segments(db, index):
                     queue['pending'] += 1

@@ -368,9 +368,10 @@ def source_status():
         else:
             status = "已索引"
             indexed_at = item.get("indexedAt") or coverage.get("completedAt")
+            collection = health.collection_state(item)
             if not item.get("found"):
                 status = "没接入"
-            elif any(item.get(key) for key in ("failed", "skippedLines", "parserFailed", "missing", "syncIncomplete")):
+            elif item.get('missing') or collection=='partial':
                 status = "内容不全"
             elif coverage.get("updatingSince") or not indexed_at:
                 status = "索引旧"
@@ -378,6 +379,8 @@ def source_status():
                 synced = datetime.fromisoformat(indexed_at)
                 if (datetime.now(timezone.utc) - synced).total_seconds() > 3600:
                     status = "索引旧"
+                elif collection=='retry':
+                    status = '有会话等下轮补读'
             results[agent] = {"status": status, "indexed_at": indexed_at, **item}
     return results
 
@@ -394,8 +397,20 @@ def packet_coverage():
         return {"coverage": "资料袋可能过期（最近刷新失败）"}
     if report.get('fileRefresh', {}).get('status') == 'failed':
         return {"coverage": "部分文件摘要可能过期（最近刷新失败）"}
-    if any(item.get('failed') or item.get('syncIncomplete') or item.get('skippedLines') for item in report.get('sources', {}).values()):
+    try:
+        snapshot = health.read_json(DATA / 'health.json')
+    except (OSError, ValueError):
+        snapshot = {}
+    if snapshot.get('last_collection') == report.get('completedAt') and any(
+            item.get('parser_incomplete_sessions') or item.get('transcripts_without_index')
+            or item.get('message_gap_over_15m') or item.get('source_modified_over_15m_after_latest_index')
+            for item in snapshot.get('sources', {}).values()):
         return {'coverage': '部分来源采集不完整'}
+    collection = {health.collection_state(item) for item in report.get('sources', {}).values()}
+    if 'partial' in collection:
+        return {'coverage': '部分来源采集不完整'}
+    if 'retry' in collection:
+        return {'coverage': '有会话等下轮补读'}
     return {}
 
 

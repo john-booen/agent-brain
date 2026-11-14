@@ -482,6 +482,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(sources['codex']['sessions_without_messages'], 1)
         self.assertEqual(sources['codex']['sessions_with_user_messages'], 1)
         self.assertEqual(sources['codex']['failure_reasons'], {'SOURCE_CHANGED': 1})
+        self.assertEqual(sources['codex']['files_waiting_for_retry'], 1)
+        self.assertFalse(sources['codex']['incomplete'])
         self.assertEqual(sources['codex']['transcripts_matched_to_index'], 1)
         self.assertEqual(sources['codex']['transcripts_without_index'], 0)
         self.assertTrue(sources['kimi-work']['incomplete'])
@@ -489,6 +491,24 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(sources['kimi-work']['transcripts_without_index'], 1)
         self.assertEqual(sources['kimi-work']['excluded_auxiliary_logs'], 1)
         self.assertNotIn('cowork', sources)
+
+    def test_pending_collection_is_distinct_from_actual_missing_content(self):
+        timestamp = brain.now()
+        coverage = self.data / 'coverage.json'
+        report = {'completedAt':timestamp,'sources':{'codex':{
+            'found':10,'failed':1,'failureReasons':{'SOURCE_CHANGED':1}}}}
+        coverage.write_text(json.dumps(report))
+        self.assertEqual(brain.source_status()['codex']['status'],'有会话等下轮补读')
+        self.assertEqual(brain.packet_coverage()['coverage'],'有会话等下轮补读')
+        health_path = self.data / 'health.json'
+        health_path.write_text(json.dumps({'last_collection':timestamp,'sources':{'codex':{'message_gap_over_15m':1}}}))
+        self.assertEqual(brain.packet_coverage()['coverage'],'部分来源采集不完整')
+        health_path.write_text(json.dumps({'last_collection':'earlier','sources':{'codex':{'message_gap_over_15m':1}}}))
+        self.assertEqual(brain.packet_coverage()['coverage'],'有会话等下轮补读')
+        report['sources']['codex']['failed'] = 2
+        coverage.write_text(json.dumps(report))
+        self.assertEqual(brain.source_status()['codex']['status'],'内容不全')
+        self.assertEqual(brain.packet_coverage()['coverage'],'部分来源采集不完整')
 
     def test_rate_limit_leaves_a_visible_status_and_stops_until_next_window(self):
         sid = 'codex:fictional-quota'
