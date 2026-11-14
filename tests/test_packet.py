@@ -209,6 +209,23 @@ class PacketTest(unittest.TestCase):
             self.tool('read_file', **args)
         self.assertIn('second', self.tool('read_file', **{**args, 'path':str(files[1])}, ordinal=2)['text'])
 
+    def test_read_file_uses_verified_log_for_nested_relative_deliveries(self):
+        path = self.root / 'nested' / 'output' / 'report.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('Verified nested report.')
+        sid = 'deepseek-harness:fictional-nested-output'
+        self.archive_messages(sid, 'Fictional earlier work', [('assistant','Saved [Report](output/report.md)\n'),
+                                                              ('assistant','Saved [Report](../output/report.md)\n')])
+        self.tool('log_work',project='Earlier Work',create_project=True,source='deepseek-harness',
+                  summary='Earlier project.',session_id=sid)
+        self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Register the output.',session_id=sid,
+                  deliverables=[{'path':str(path),'ordinal':0,'task':'Nested report'}])
+        args = {'project':'Atlas','path':path.name,'session_id':sid}
+        value = self.tool('read_file',**args,ordinal=0)
+        self.assertIn('Verified nested report.',value['text'])
+        with self.assertRaisesRegex(ValueError,'引用'):
+            self.tool('read_file',**args,ordinal=1)
+
     def archive_messages(self, sid, project, messages):
         archive = self.data / 'agentsview'
         archive.mkdir()

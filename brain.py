@@ -1033,17 +1033,17 @@ def register_path_relocation(db, old, new, reason):
 def delivery_paths(session_id, ordinal):
     archive = DATA / 'agentsview/sessions.db'
     if not archive.is_file():
-        return set()
+        return [], None
     with closing(sqlite3.connect(archive.as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
         index.row_factory = sqlite3.Row
         session = index.execute('SELECT cwd FROM sessions WHERE id=?', (session_id,)).fetchone()
         if session is None:
-            return set()
+            return [], None
         rows = extraction.transcript(index, session_id, visible, packet.paths_in, json_text,
                                      focused=True, start=ordinal, end=ordinal)
     if not rows or rows[0]['role'] != 'assistant':
-        return set()
-    return {resolved for path in rows[0].get('files', []) if (resolved := packet.available_path(path, session['cwd']))}
+        return [], None
+    return rows[0].get('files', []), session['cwd']
 
 
 def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
@@ -1060,10 +1060,31 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         data, _ = packet.load(db, DATA, pid, visible, clean, lazy=True)
         entries = [item for key in ('inputs', 'deliverables') for item in data[key] if item.get('path')]
         if session_id is not None:
-            paths = delivery_paths(session_id, ordinal)
-            matches = {candidate for candidate in paths if candidate == path or (
-                Path(path).name == path and normalized(Path(candidate).name) == normalized(path))}
-            if len(matches) != 1 or not any(item['path'] in matches for item in entries):
+            references, cwd = delivery_paths(session_id, ordinal)
+            source = [value for value in references if (
+                packet.available_path(value,cwd)==path or
+                Path(path).name==path and normalized(Path(value).name)==normalized(path))]
+            matches = set()
+            if len(source)==1:
+                linked = Path(source[0])
+                resolved = packet.available_path(source[0],cwd)
+                verified_matches = set()
+                for item in entries:
+                    candidate = item['path']
+                    ref = item['ref']
+                    exact = candidate==resolved
+                    # Some clients report relative paths below the session working directory.
+                    # Trust a suffix match only when this project already verified the exact source message.
+                    verified = (ref['session_id']==session_id and ref['ordinal']==ordinal and ref.get('evidence_source')
+                                and not linked.is_absolute() and len(linked.parts)>1 and '..' not in linked.parts
+                                and linked.parts==Path(candidate).parts[-len(linked.parts):])
+                    if exact:
+                        matches.add(candidate)
+                    if verified:
+                        verified_matches.add(candidate)
+                if verified_matches:
+                    matches = verified_matches
+            if len(matches) != 1:
                 raise ValueError('该引用未指向唯一的登记文件，请核对交付消息或使用登记的完整路径')
             path = matches.pop()
         elif Path(path).name == path:
