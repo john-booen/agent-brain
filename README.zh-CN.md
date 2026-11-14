@@ -27,7 +27,7 @@ Codex 和 Claude Cowork 用本地 MCP。DeepSeek Harness 用 stdio 连接器。K
 
 按项目名直接调用 `get_project`，获得短卡和可查分区。项目名称不明确时用 `find_project`，跨项目总览用 `list_projects`。列表和分区用返回的 `next_offset` 翻页。每页工具返回采用 UTF-8 字节上限，给采用字节分词的客户端预留 2,000 Token 内的返回预算。工具返回和模型整轮用量分别计量。查询读取现有结构化记录，在本地生成短卡。
 
-资料袋保留用户原始资料、每项任务的当前交付、用户要求和出处。`section` 支持 `inputs`、`deliverables`、`rules`、`todos`、`history` 和 `timeline`。在 `log_work` 中使用 `inputs`、`deliverables`、`rules` 写入这些信息。交付用稳定的 `task` 名称归组，`confirmed` 只在用户明确选定该版本时填写。用 `build-packets --files` 先处理近 60 天且至少两条记录的项目并缓存文件摘要，其他项目首次查询时建立资料袋。支持可选的本机摘要模型，默认使用文件正文提取。运行定时采集时可配置 `AGENT_BRAIN_PACKET_PYTHON` 来刷新资料袋，macOS Homebrew 启动的本机定时采集默认启用。
+资料袋保留用户原始资料、每项任务的当前交付、用户要求和出处。`section` 支持 `inputs`、`deliverables`、`rules`、`todos`、`history` 和 `timeline`。在 `log_work` 中使用 `inputs`、`deliverables`、`rules` 写入这些信息。交付用稳定的 `task` 名称归组，`confirmed` 只在用户明确选定该版本时填写。用 `build-packets --files` 先处理近 60 天且至少两条记录的项目并缓存文件摘要，其他项目首次查询时建立资料袋。文件摘要在本机提取。运行定时采集时可配置 `AGENT_BRAIN_PACKET_PYTHON` 来刷新资料袋，macOS Homebrew 启动的本机定时采集默认启用。
 
 `read_file` 按登记路径读取文档，也可以填项目名和卡片上唯一的文件名。Word 和 Markdown 用章节标题，PDF 用页码或关键词，Excel 用工作表名。用 `next_offset` 继续读取长段，PDF 提取依赖 `pdftotext`。内容会作为证据交给当前客户端。项目合并使用 `merge-projects`，保留旧名和编号。`merge-candidates` 列出有共享证据的待复核组合，`move-record` 纠正具体的派生工作记录。
 

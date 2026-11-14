@@ -684,7 +684,7 @@ def summary_status(db, value):
     return '未提取到正文' if state and state['status'] == 'no_text' else '摘要待生成'
 
 
-def prepare_file(db, value, clean, summarize=None, force=False):
+def prepare_file(db, value, clean, force=False):
     try:
         path = file_text.document_path(value)
         before = path.stat()
@@ -703,7 +703,7 @@ def prepare_file(db, value, clean, summarize=None, force=False):
         return failure['status'], None, None
     if row and row['fingerprint'] == fingerprint and not force:
         summary = db.execute('SELECT summary, method FROM packet_file_summaries WHERE fingerprint=?', (row['digest'],)).fetchone()
-        if summary and (summarize is None or summary['method'] == 'model'):
+        if summary:
             return 'cached', summary['summary'], summary['method']
     try:
         data = file_text.read_bytes(path)
@@ -712,7 +712,7 @@ def prepare_file(db, value, clean, summarize=None, force=False):
             return 'changed', None, None
         digest = hashlib.sha256(path.suffix.lower().encode() + b'\0' + data).hexdigest()
         summary = db.execute('SELECT summary, method FROM packet_file_summaries WHERE fingerprint=?', (digest,)).fetchone()
-        if summary and not force and (summarize is None or summary['method'] == 'model'):
+        if summary and not force:
             status, text, method = 'cached', summary['summary'], summary['method']
         else:
             parts = file_text.extract(path, data, preview=True)
@@ -722,12 +722,6 @@ def prepare_file(db, value, clean, summarize=None, force=False):
                     db.execute('INSERT OR REPLACE INTO packet_file_failures VALUES(?,?,?)', (value, fingerprint, 'no_text'))
                 return 'no_text', None, None
             method = 'extractive'
-            if summarize:
-                preview = '\n'.join(title + '\n' + body[:1800] for title, body in parts[:10])[:9000]
-                answer = summarize(clean(preview))
-                if isinstance(answer, str) and answer.strip():
-                    text = clean(answer.strip())[:200]
-                    method = 'model'
             status = 'built'
     except (OSError, ValueError):
         return 'unreadable', None, None
