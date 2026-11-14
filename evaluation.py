@@ -70,6 +70,13 @@ def score(cases, predict, measure):
     return report
 
 
+def can_publish(report):
+    fields = report['metrics']
+    measured = (fields['deliverables']['precision'], fields['rules']['precision'], fields['attribution']['precision'])
+    return (report['scored_projects'] >= 30 and report['user_verified_projects'] >= 10 and
+            all(value is not None and value >= 0.9 for value in measured))
+
+
 def measure_card(db, case, tokenizer=None):
     card = brain.json_text(brain.get_project(db, case['id']))
     return {'utf8_bytes': len(card.encode()), 'tokens': tokenizer(card) if tokenizer else None}
@@ -105,6 +112,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--markdown', type=Path)
     parser.add_argument('--compare', type=Path, help='Calculate metric changes from a previous scorecard JSON')
+    parser.add_argument('--release-gate', action='store_true', help='Exit nonzero until the accuracy and user review gates pass')
     args = parser.parse_args()
     if args.fictional:
         fixture = json.loads((brain.REPO / 'examples/eval.fictional.json').read_text())
@@ -125,6 +133,8 @@ def main():
             report = score(cases, lambda item: prediction(db, item), lambda item: measure_card(db, item, tokenizer))
     if args.compare:
         report['comparison'] = compare(json.loads(args.compare.read_text()), report)
+    if args.release_gate:
+        report['accuracy_release_gate'] = can_publish(report)
     body = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(body + '\n')
@@ -151,6 +161,8 @@ def main():
             tokens = row['tokens'] if row['tokens'] is not None else '—'
             lines.append(f"| {row['id']} | {row['status']} | {tokens} | {row['utf8_bytes']} |")
         args.markdown.write_text('\n'.join(lines) + '\n')
+    if args.release_gate and not report['accuracy_release_gate']:
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
