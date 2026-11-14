@@ -82,7 +82,29 @@ def selected_answer(content):
     return 'User selected: ' + ' / '.join(choices) if choices else ''
 
 
-def transcript(index, sid, visible, paths_in, encode, *, outbound=False, start=0, end=None):
+def selection_context(content):
+    selection = selected_answer(content)
+    if not selection:
+        return ''
+    event = json.loads(content)
+    selected = {answer.get('id'): answer.get('selected', []) for answer in event.get('answers') or []
+                if isinstance(answer, dict)}
+    prompts = []
+    for question in event.get('questions') or []:
+        if not isinstance(question, dict):
+            continue
+        choice = selected.get(question.get('id'))
+        if not isinstance(choice, list):
+            continue
+        if isinstance(question.get('question'), str):
+            prompts.append(question['question'])
+        prompts.extend(option['description'] for option in question.get('options') or []
+                       if isinstance(option, dict) and option.get('label') in choice
+                       and isinstance(option.get('description'), str))
+    return ' · '.join([selection, *prompts])
+
+
+def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused=False, start=0, end=None):
     messages = []
     for row in index.execute("""SELECT ordinal,role,dialogue_text,content,is_system,timestamp FROM messages
                                WHERE session_id=? AND ordinal>=? AND ordinal<=?
@@ -120,7 +142,12 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, start=0
                 for value in (*links, *(value for value in inline if '/' in value))]
         paths = list(dict.fromkeys(path for path in (*attachments, *paths_in(text), *uploads, *refs) if '://' not in path))[:12]
         limit = 1400 if row['role'] == 'user' else 700
-        if outbound and row['role'] == 'assistant':
+        if outbound and focused and row['role'] == 'assistant':
+            # Retain the assistant's handoff excerpt. Structured document and tool bodies stay local.
+            text = re.split(r'\n\s*(?:#{1,6}\s|>|\||---+\s*\n|(?:文件)?正文[：:])', text, maxsplit=1)[0]
+            text = re.sub(r'(?:“[^”]*”|「[^」]*」)', ' ', text)[:600]
+            limit = 600
+        elif outbound and row['role'] == 'assistant':
             # Keep only the lead of an actual handoff. Omit quoted documents, tables and text after headings.
             lead = re.split(r'\n\s*(?:#{1,6}\s|>|\|)|\n\s*\n', text, maxsplit=1)[0]
             lead = re.split(r'[。；;“「]|\.(?:\s|$)', lead, maxsplit=1)[0]
@@ -130,9 +157,11 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, start=0
             limit = 340
         if outbound and not text.strip() and not paths:
             continue
-        if row['role'] == 'assistant' and not paths and len(text) < 45:
+        if not focused and row['role'] == 'assistant' and not paths and len(text) < 45:
             continue
         entry = {'ordinal': row['ordinal'], 'role': row['role'], 'text': text_excerpt(text, limit)}
+        if focused:
+            entry['time'] = row['timestamp']
         if paths:
             entry['files'] = paths
         messages.append(entry)

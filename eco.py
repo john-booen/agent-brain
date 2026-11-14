@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 
 MODEL = 'opendesign/deepseek-v4.1-flash-eco'
 MAX_OUTPUT = 7500
+RECALL_MAX_OUTPUT = 16000
 DAY_LIMIT = 5000
 WEEK_LIMIT = 30000
 
@@ -70,7 +71,7 @@ def reserve(db, settings, purpose, amount):
         raise
 
 
-def call(db, settings, messages, purpose, send, encode):
+def call(db, settings, messages, purpose, send, encode, *, recall=False):
     url = settings.get('url', '')
     parsed = urlsplit(url)
     if (settings.get('enabled') is not True or settings.get('name') != MODEL or parsed.scheme != 'http'
@@ -78,16 +79,18 @@ def call(db, settings, messages, purpose, send, encode):
             or parsed.fragment or parsed.path.rstrip('/') != '/v1' or not parsed.port):
         raise BudgetUnavailable('Eco 路由未配置或未启用')
     # UTF-8 bytes cover byte-based tokenizer input plus conservative protocol overhead.
-    held = credit_bound(len(encode(messages).encode()) + 1024, MAX_OUTPUT)
+    output_limit = RECALL_MAX_OUTPUT if recall else MAX_OUTPUT
+    held = credit_bound(len(encode(messages).encode()) + 1024, output_limit)
     request = reserve(db, settings, purpose, held)
     bill = {}
     status = 'unmeasured'
     try:
         result = send(messages, settings={
-            'url': url, 'name': MODEL, 'max_tokens': MAX_OUTPUT, 'timeout': 45,
+            'url': url, 'name': MODEL, 'max_tokens': output_limit, 'timeout': 45,
             'headers': {'Authorization': 'Bearer magpie-agent-brain', 'User-Agent': 'agent-brain/1.0'},
             'extra_body': {'stream': True, 'stream_options': {'include_usage': True},
-                           'thinking': {'type': 'disabled'}, 'response_format': {'type': 'json_object'}},
+                           **({'reasoning_effort':'low'} if recall else {'thinking':{'type':'disabled'}}),
+                           'response_format': {'type': 'json_object'}},
         }, local_only=True, on_usage=bill.update)
         status = 'ok'
         return result

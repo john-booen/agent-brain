@@ -454,6 +454,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             ('assistant', 'Delivered [Atlas report](/tmp/atlas.md).\n\n# ORIGINAL_FILE_BODY'),
             ('assistant', '已落盘 [Atlas notes](/tmp/notes.md)，有 12 条要点、15 句口径；“PRIVATE_QUOTE”'),
             ('user', '[Reply from imported agent] PRIVATE_AGENT_REPLY'),
+            ('user', 'Gather the test evidence. [tool:read]'),
+            ('assistant', 'The first version was saved in the workspace. <tool_output>PRIVATE_TOOL</tool_output>'),
         ])
         settings = {'enabled': True, 'url': 'http://127.0.0.1:3425/v1', 'name': brain.eco.MODEL}
         (self.data / 'config.json').write_text(json.dumps({'eco': settings}))
@@ -465,10 +467,12 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         def gateway(messages, **kwargs):
             self.assertNotIn('PRIVATE_BODY', str(messages))
             self.assertNotIn('ORIGINAL_FILE_BODY', str(messages))
-            self.assertNotIn('working on it', str(messages))
             self.assertNotIn('PRIVATE_QUOTE', str(messages))
             self.assertNotIn('PRIVATE_AGENT_REPLY', str(messages))
+            self.assertNotIn('PRIVATE_TOOL', str(messages))
             self.assertIn('15 句口径', str(messages))
+            self.assertEqual(kwargs['settings']['max_tokens'], 16000)
+            self.assertEqual(kwargs['settings']['extra_body']['reasoning_effort'], 'low')
             kwargs['on_usage']({'prompt_tokens': 1000, 'completion_tokens': 500})
             return {'claims': [
                 {'ref': '1:2', 'quote': 'Delivered', 'kind': 'deliverable', 'text': 'Atlas report',
@@ -482,12 +486,57 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertTrue(self.tool('recall', project='Atlas', question='Which report is done?')['cached'])
             self.assertEqual(model.call_count, 1)
         self.assertEqual(brain.eco.snapshot(self.db, settings)['24h']['used_or_reserved'], 9)
+        audit = json.loads((self.data/'recall_evidence.jsonl').read_text().splitlines()[0])
+        self.assertEqual(set(audit), {'at','sha256','bytes','messages'})
+        self.assertIn([sid,2], audit['messages'])
         self.db.execute("INSERT INTO recall_segments VALUES(?,0,2,'revision','now',?)", (sid,
             json.dumps({'summary':'Atlas schedule handoff','tags':['Atlas'],'anchors':[2]})))
         self.db.commit()
         with patch.object(brain, 'model', side_effect=OSError('offline')):
             answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
         self.assertEqual((answer['level'], answer['evidence'][0]['ordinal']), (3, 2))
+
+    def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
+        sid = 'codex:fictional-history'
+        version = self.root/'agenda.md'
+        version.write_text('PRIVATE_CURRENT_FILE')
+        historical_hash = 'a' * 64
+        selected = json.dumps({'kind':'answer_to_pending_question',
+                               'questions':[{'id':'q','question':'Which venue policy should Atlas use?',
+                                             'options':[{'label':'Go with the small room','description':'Two teams only'}]}],
+                               'answers':[{'id':'q','selected':['Go with the small room']}]})
+        dialogue = [('user',selected),('user','Atlas agenda version?'),
+                    ('assistant',f'Agenda in `{version}` had 2 页. SHA256: {historical_hash}'),
+                    ('assistant',f'The agenda in `{version}` was replaced with 1 页. SHA256: {historical_hash}')]
+        self.archive_messages(sid,'Atlas',dialogue + [('user','Unrelated test turn')]*150)
+        self.tool('log_work',project='Atlas',create_project=True,summary='Agenda history.',source='codex',session_id=sid)
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.execute('UPDATE messages SET is_system=1 WHERE ordinal=0')
+            index.row_factory=sqlite3.Row
+            project=brain.resolve_project_id(self.db,'Atlas')
+            def package(question):
+                return brain.recall.evidence_package(self.db,index,project,question,brain.visible,
+                    brain.packet.paths_in,brain.json_text,use_tags=False)[0]
+            result=package('What venue policy did Atlas choose?')
+            self.assertTrue(any(row['text']=='User selected: Go with the small room' for row in result['messages']))
+            result=package('What was the Atlas agenda version?')
+        self.assertNotIn('PRIVATE_CURRENT_FILE',str(result))
+        timeline=next(item for item in result['file_timelines'] if item['current'])
+        self.assertEqual([row['reported_pages'] for row in timeline['history']],[2,1])
+        self.assertFalse(timeline['current']['matches_latest_reported_sha256'])
+
+    def test_recall_search_uses_agentsview_trigrams_for_full_words(self):
+        with sqlite3.connect(':memory:') as db:
+            db.executescript("""CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id, ordinal, role,
+                              is_system, dialogue_text, content);
+                CREATE VIRTUAL TABLE message_trigram_fts USING fts5(content,tokenize='trigram',detail='none');
+                INSERT INTO messages VALUES(1,'codex:one',10,'assistant',0,'Atlas-notes.md 修订稿','');
+                INSERT INTO messages VALUES(2,'codex:two',20,'assistant',0,'Atlas plan','');
+                INSERT INTO message_trigram_fts(rowid,content) SELECT id,dialogue_text FROM messages;""")
+            self.assertEqual([(sid,ordinal) for sid,ordinal,_ in brain.recall.text_matches(db,{'atlas-notes.md','修订稿'})],
+                             [('codex:one',10)])
 
     def test_busy_database_reports_error_and_accepts_retry_after_unlock(self):
         args = dict(project='Atlas', create_project=True, source='codex', summary='Fictional handoff.', work_id='lock')
