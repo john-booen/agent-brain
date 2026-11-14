@@ -189,6 +189,7 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
             continue
         latest = sorted(discovered, key=lambda k:(discovered[k]['time'] or '',k))[::-1]
         current = None
+        current_path = None
         for key in latest:
             path = discovered[key]['path']
             cwd = metadata[key[0]][1]
@@ -209,11 +210,12 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
                 continue
             current = {'basename':p.name,'sha256':digest,
                        'modified':datetime.fromtimestamp(after.st_mtime,timezone.utc).isoformat()}
+            current_path = resolved
             predecessor = discovered[latest[0]].get('sha256') if key==latest[0] else None
             if predecessor:
                 current['matches_latest_reported_sha256'] = predecessor==digest
             break
-        timelines.append((latest,discovered,current))
+        timelines.append((latest,discovered,current,current_path))
     return timelines
 
 
@@ -382,7 +384,7 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
     # Version lookup may find many mentions of a generic filename. Keep its best-supported
     # and most recent references in the package without giving every mention the best match's score.
     file_refs = set()
-    for newest, _, _ in timelines:
+    for newest, _, _, _ in timelines:
         file_refs.update(newest[:3])
         file_refs.update(sorted(newest,key=ordering.get,reverse=True)[:3])
     file_refs.difference_update(primary)
@@ -398,20 +400,37 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
         size += delta
         evidence[ref] = {**message,'session_id':sid}
         messages.append(message)
-    for latest, discovered, current in timelines:
+    local_versions = {}
+    for latest, discovered, current, current_path in timelines:
         history = []
+        same_path = []
         for sid, ordinal in reversed(latest):
             ref = f'{numbered[sid]}:{ordinal}'
             if ref in evidence:
                 record = discovered[sid,ordinal]
                 history.append({'ref':ref, 'basename':Path(record['path']).name,
                                 **{k:v for k,v in record.items() if k!='path'}})
+                if current_path and packet.available_path(record['path'],metadata[sid][1])==current_path:
+                    same_path.append((ref,record))
+        if len(same_path)>=2:
+            last = same_path[-1]
+            after = last[1].get('reported_pages')
+            if after:
+                latest_row = evidence[last[0]]
+                for ref, record in same_path[:-1]:
+                    pages = record.get('reported_pages')
+                    if pages and pages!=after:
+                        local_versions[ref] = {'session_id':latest_row['session_id'],'ordinal':latest_row['ordinal'],
+                                               'reported_pages':[pages,after],
+                                               'current_matches_reported_hash':current.get('matches_latest_reported_sha256')}
         if history:
             entry = {'history':history,'current':current}
             delta = len(encode(entry).encode())+1
             if size+delta<=EVIDENCE_BYTES:
                 payload['file_timelines'].append(entry)
                 size += delta
+    for ref,change in local_versions.items():
+        evidence[ref]['later_version']=change
     return payload,evidence,tags
 
 
@@ -486,8 +505,19 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
             item['files']=[Path(p).name[:120] for p in row['files'][:2]]
         if row.get('inline_sections'):
             item['inline_sections']=row['inline_sections']
+        if row.get('later_version'):
+            later = row['later_version']
+            later_sid = later['session_id']
+            later_ref = session_refs.setdefault(later_sid,str(len(session_refs)+1))
+            item['later_version'] = {'session':later_ref,'ordinal':later['ordinal'],
+                                     'reported_pages':later['reported_pages']}
+            if later['current_matches_reported_hash'] is not None:
+                item['later_version']['current_matches_reported_hash'] = later['current_matches_reported_hash']
         item['text']=extraction.text_excerpt(row['text'],140 if position-offset<3 else 75)
-        candidate={**result,'sessions':{**result['sessions'],ref:sid},
+        sessions = {**result['sessions'],ref:sid}
+        if row.get('later_version'):
+            sessions[later_ref]=later_sid
+        candidate={**result,'sessions':sessions,
                    'evidence':[*result['evidence'],item],'next_offset':position+1}
         encoded=encode(candidate)
         if (count(encoded) if count else len(encoded.encode()))>limit:

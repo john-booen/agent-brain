@@ -551,14 +551,18 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             project=brain.resolve_project_id(self.db,'Atlas')
             def package(question):
                 return brain.recall.evidence_package(self.db,index,project,question,brain.visible,
-                    brain.packet.paths_in,brain.json_text,use_tags=False)[0]
-            result=package('What venue policy did Atlas choose?')
+                    brain.packet.paths_in,brain.json_text,use_tags=False)
+            result,_,_=package('What venue policy did Atlas choose?')
             self.assertTrue(any(row['text']=='User selected: Go with the small room' for row in result['messages']))
-            result=package('What was the Atlas agenda version?')
+            result,evidence,_=package('What was the Atlas agenda version?')
         self.assertNotIn('PRIVATE_CURRENT_FILE',str(result))
         timeline=next(item for item in result['file_timelines'] if item['current'])
         self.assertEqual([row['reported_pages'] for row in timeline['history']],[2,1])
         self.assertFalse(timeline['current']['matches_latest_reported_sha256'])
+        old_ref=timeline['history'][0]['ref']
+        local=brain.recall.local_evidence({old_ref:evidence[old_ref]},brain.json_text,None)
+        self.assertEqual(local['evidence'][0]['later_version'],
+                         {'session':'1','ordinal':3,'reported_pages':[2,1],'current_matches_reported_hash':False})
 
     def test_recall_search_uses_agentsview_trigrams_for_full_words(self):
         with sqlite3.connect(':memory:') as db:
