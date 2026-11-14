@@ -183,6 +183,32 @@ class PacketTest(unittest.TestCase):
             self.tool('read_file', project='Atlas', path='source.md', section='Figures')
         self.assertIn('first', self.tool('read_file', project='Atlas', path=str(paths[0]), section='Figures')['text'])
 
+    def test_read_file_uses_archived_delivery_to_disambiguate_registered_names(self):
+        files = [self.root / folder / 'report.md' for folder in ('first', 'second', 'unregistered')]
+        for file in files:
+            file.parent.mkdir()
+            file.write_text(f'# Figures\n{file.parent.name}')
+        sid = 'cowork:fictional-distinct-files'
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', 'Here is the report: [first](first/report.md).'),
+            ('assistant', f'Here is the report: [second](computer://{files[1]}).'),
+            ('assistant', f'Drafts: [first]({files[0]}) and [second]({files[1]}).'),
+            ('assistant', f'Here is another report: [unregistered]({files[2]}).'),
+            ('user', f'Working on [this report]({files[0]}).'),
+            ('assistant', f'Examples: [first]({files[0]}) and [unregistered]({files[2]}).'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, summary='Register two reports.', source='codex',
+                  inputs=[{'path': str(file)} for file in files[:2]])
+        args = {'project':'Atlas', 'path':'report.md', 'session_id':sid}
+        for ordinal, expected in enumerate(('first', 'second')):
+            self.assertIn(expected, self.tool('read_file', **args, ordinal=ordinal)['text'])
+        for ordinal in (2,3,4,5,99):
+            with self.assertRaisesRegex(ValueError, '引用'):
+                self.tool('read_file', **args, ordinal=ordinal)
+        with self.assertRaisesRegex(ValueError, '会话.*消息号'):
+            self.tool('read_file', **args)
+        self.assertIn('second', self.tool('read_file', **{**args, 'path':str(files[1])}, ordinal=2)['text'])
+
     def archive_messages(self, sid, project, messages):
         archive = self.data / 'agentsview'
         archive.mkdir()

@@ -9,7 +9,7 @@ When the user asks to continue past work, identify a final deliverable, or recov
 
 Reuse the project packet in the same conversation until the user asks for a refresh or the project changes. Use `section` and `next_offset` for inputs, task deliverables, user rules, and history. For registered file text, use `read_file` with its path or its unique displayed name plus the project, and select a section, PDF page, or Excel sheet. Use `search` or `get_session` only when packet and file evidence are insufficient. Keep project content out of standing instructions.
 
-Before editing an existing deliverable, use `read_file` locally to verify the relevant text and version. Treat the short card as navigation and preserve any uncertainty or fallback level returned by `recall`.
+Before editing an existing deliverable, use `read_file` locally to verify the relevant text and version. When a delivery name is ambiguous, pass `project`, `path` (the filename), `session_id` and `ordinal` from the assistant's delivery. In a local recall page, first resolve the `session` key through `sessions`. For a confirmed result, use `delivery_ordinal` when present. This reads a current registered file; use the historical messages and fingerprint to check whether it was overwritten. Treat the short card as navigation and preserve any uncertainty or fallback level returned by `recall`.
 
 Use whole-session message hits, nearby context, project references, structured user choices and file/version links to choose evidence. Wording by itself must not exclude evidence. Strip tool bodies, reasoning blocks and internal control messages. For an overwritten file, use the historical delivery references and check the current fingerprint before continuing.
 

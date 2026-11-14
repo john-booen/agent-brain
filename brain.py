@@ -1030,16 +1030,43 @@ def register_path_relocation(db, old, new, reason):
     return {'registered': True}
 
 
-def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0):
+def delivery_paths(session_id, ordinal):
+    archive = DATA / 'agentsview/sessions.db'
+    if not archive.is_file():
+        return set()
+    with closing(sqlite3.connect(archive.as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
+        index.row_factory = sqlite3.Row
+        session = index.execute('SELECT cwd FROM sessions WHERE id=?', (session_id,)).fetchone()
+        if session is None:
+            return set()
+        rows = extraction.transcript(index, session_id, visible, packet.paths_in, json_text,
+                                     focused=True, start=ordinal, end=ordinal)
+    if not rows or rows[0]['role'] != 'assistant':
+        return set()
+    return {resolved for path in rows[0].get('files', []) if (resolved := packet.available_path(path, session['cwd']))}
+
+
+def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
+                      session_id=None, ordinal=None):
     if section and page is not None:
         raise ValueError('每次请选择章节或页码')
+    if session_id is not None or ordinal is not None:
+        if not project or not session_id or ordinal is None:
+            raise ValueError('按原文定位文件时，请一并提供项目、会话 ID 和消息号')
     if project:
         pid = resolve_project_id(db, project)
         if not pid:
             raise ValueError('找不到该项目')
         data, _ = packet.load(db, DATA, pid, visible, clean, lazy=True)
         entries = [item for key in ('inputs', 'deliverables') for item in data[key] if item.get('path')]
-        if Path(path).name == path:
+        if session_id is not None:
+            paths = delivery_paths(session_id, ordinal)
+            matches = {candidate for candidate in paths if candidate == path or (
+                Path(path).name == path and normalized(Path(candidate).name) == normalized(path))}
+            if len(matches) != 1 or not any(item['path'] in matches for item in entries):
+                raise ValueError('该引用未指向唯一的登记文件，请核对交付消息或使用登记的完整路径')
+            path = matches.pop()
+        elif Path(path).name == path:
             # The overview omits long paths. A unique displayed name still opens only a registered file.
             name = normalized(path)
             matches = {item['path'] for item in entries if Path(item['path']).is_absolute()
@@ -1502,12 +1529,12 @@ PACKET_ITEM_SCHEMAS = {
 }
 
 TOOLS = {
-    "list_projects": ("List recent projects across the workspace.",
+    "list_projects": ("List recent projects.",
                       {"offset": OFFSET, "days": {"type": "integer", "minimum": 0, "maximum": 3650},
                        "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "min_records": OFFSET}, []),
     "find_project": ("Find a project by name or alias.",
                      {"query": {**STRING, "maxLength": 180}}, ["query"]),
-    "get_project": ("Read a project card or section by name or ID.",
+    "get_project": ("Read a project card or section.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
     "recall": ("Find project evidence and past deliverables.",
@@ -1515,14 +1542,15 @@ TOOLS = {
                 "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
     "search": ("Search old dialogue for evidence.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
-    "get_session": ("Read an excerpt from an archived session.",
+    "get_session": ("Read an archived session excerpt.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "text_offset": OFFSET,
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
-    'read_file': ('Read a registered file by path or unique name within a project.',
+    'read_file': ('Read a registered file by name, path or delivery reference.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
+                   'session_id': {**STRING, 'maxLength': 350}, 'ordinal': {**OFFSET, 'maximum': 2**63 - 1},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
                    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET}, ['path']),
-    "log_work": ("Record completed work in a project.",
+    "log_work": ("Record completed project work.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
                   "session_id": STRING, "work_id": STRING, "create_project": {"type": "boolean"},
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
@@ -1600,7 +1628,7 @@ def mcp(db):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"} else "2025-11-25",
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
-                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. Read one registered document section locally when needed. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
+                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. Read one registered document section locally when needed. For a shared filename, pass the project, session_id and delivery ordinal to read_file. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
