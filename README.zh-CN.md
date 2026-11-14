@@ -10,13 +10,13 @@
 
 [English](README.md)
 
-把不同 AI 客户端的工作按项目汇到一起。AgentsView 采集历史，agent-brain 读取可见对话，由模型生成摘要和判断项目归属。每个项目有带出处的进展卡和日志。Agent 完成工作后调用 `log_work` 更新项目。
+AgentsView 采集多个 AI 客户端的聊天。可选的后台模型从对话中提取项目归属、任务交付和用户要求。日用模型接续项目时先读带出处的精简资料袋，有需要再打开原文。完成工作后可以用 `log_work` 更新项目。
 
 ## 快速开始
 
-需要 Python 3.11+、Node.js 22+、Zstandard、[AgentsView v0.47.0](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0) 命令行程序，以及用于摘要的 OpenAI 兼容模型。默认数据目录是 `~/SharedBrain`，也可通过 `AGENT_BRAIN_DATA` 指定仓库之外的目录。
+需要 Python 3.12+、Node.js 22+、Zstandard 和 [AgentsView v0.47.0](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0) 命令行程序。默认数据目录是 `~/SharedBrain`，也可通过 `AGENT_BRAIN_DATA` 指定仓库之外的目录。
 
-1. 将 `examples/config.example.json` 复制为数据目录下的 `config.json`，填入模型地址与模型名。
+1. 将 `examples/config.example.json` 复制为数据目录下的 `config.json`。如果计划用 `backfill` 摘要旧会话，再填入模型地址和模型名。凭据可放环境变量。
 2. 若 AgentsView 不在 PATH，设置 `AGENTSVIEW_BIN`。采集前停止这个档案的 AgentsView 服务，然后运行 `node collect.mjs`。如只需更新指定来源，可以传入来源名，例如 `node collect.mjs kimi-work cowork`。查询时会按需启动启用认证的本机回环服务。
 3. 运行 `python3 brain.py backfill`，生成 `_index.md`、各项目 `card.md` 与 `log.md`。可用 `--agent kimi-work --sort messages:asc --limit 8` 先跑一小批短会话。重跑会跳过已经处理且未变化的会话。
 4. 将 `python3 /绝对路径/agent-brain/brain.py mcp` 注册为本地 MCP，再启用 [skill](skills/agent-brain/SKILL.md) 或把规则加入客户端工作说明。
@@ -30,6 +30,18 @@ Codex 和 Claude Cowork 用本地 MCP。DeepSeek Harness 用 stdio 连接器。K
 资料袋保留用户原始资料、每项任务的当前交付、用户要求和出处。`section` 支持 `inputs`、`deliverables`、`rules`、`todos`、`history` 和 `timeline`。在 `log_work` 中使用 `inputs`、`deliverables`、`rules` 写入这些信息。交付用稳定的 `task` 名称归组，`confirmed` 只在用户明确选定该版本时填写。用 `build-packets --files` 先处理近 60 天且至少两条记录的项目并缓存文件摘要，其他项目首次查询时建立资料袋。文件摘要在本机提取。运行定时采集时可配置 `AGENT_BRAIN_PACKET_PYTHON` 来刷新资料袋，macOS Homebrew 启动的本机定时采集默认启用。
 
 `read_file` 按登记路径读取文档，也可以填项目名和卡片上唯一的文件名。Word 和 Markdown 用章节标题，PDF 用页码或关键词，Excel 用工作表名。用 `next_offset` 继续读取长段，PDF 提取依赖 `pdftotext`。内容会作为证据交给当前客户端。项目合并使用 `merge-projects`，保留旧名和编号。`merge-candidates` 列出有共享证据的待复核组合，`move-record` 纠正具体的派生工作记录。
+
+## 架构
+
+```mermaid
+flowchart LR
+  A[本机聊天和支持的导出] --> B[AgentsView 原文索引]
+  B --> C[带出处的项目资料袋]
+  D[客户端工作日志] --> C
+  C --> E[本机 MCP 服务]
+  F[已登记文件] --> E
+  E --> G[各 AI 客户端]
+```
 
 ## 本机维护
 
@@ -45,6 +57,16 @@ Codex 和 Claude Cowork 用本地 MCP。DeepSeek Harness 用 stdio 连接器。K
 我也在实际的 Claude Cowork 窗口里打开了生成的 Markdown 进展卡，问「Fictional Atlas 做到哪了，谁负责回滚，下一步是什么，请附 Codex 出处」。Cowork 回读了发布清单、负责回滚的发布协调员、周五预演，以及 `codex:fictional-atlas-demo` 的出处。随后 Cowork 用本机 Python 命令查询同一组虚构数据，并写入一条 `log_work`。挂载的测试文件夹中，`code/` 和 `data/` 是并列目录。
 
 ![虚构的跨工具项目进展演示](examples/demo.svg)
+
+## 常见问题
+
+**与会话归档工具怎么分工？** AgentsView 负责索引原对话。agent-brain 按项目汇总可回查的消息、任务交付和用户要求。也可以用 `log_work` 主动补记。
+
+**什么时候会调用模型？** MCP 在本机读取资料袋和登记文件。单独启动历史回填或资料袋提取时，才使用对应的模型路由。日用模型只在接续项目时读卡，需要核对时再取一个文件段落。
+
+**为什么能搜到新对话，短卡还没更新？** 原文索引和项目提取分开运行。当前客户端可以用 `log_work` 立即登记新交付。用 `health` 可核对采集和刷新状态。
+
+**怎么读长交付或找已移动的文件？** 展开 `deliverables` 分区，用 `read_file` 查登记文件的具体位置。文件已搬动时，可用 `register-path` 登记核对过的同名副本。
 
 ## 数据存放
 

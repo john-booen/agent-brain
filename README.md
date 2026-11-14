@@ -8,13 +8,13 @@ Run regressions with `python3 -B -m unittest discover -s tests` and `python3 -B 
 
 [简体中文](README.zh-CN.md)
 
-Agent Brain gives local AI clients the same project progress cards and work log. AgentsView indexes recorded sessions. Agent Brain reads visible dialogue, asks a configured model to summarize it and identify projects, and builds cards with source references. Agents record completed work through `log_work`.
+Agent Brain gives local AI clients the same project progress cards and work log. AgentsView indexes recorded sessions. An optional background model extracts project assignments, task deliverables and user requirements from visible dialogue. Client models read short cards with source references when they resume a project. Agents record completed work through `log_work`.
 
 ## Quick start
 
 Use Python 3.12+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0). Set `AGENT_BRAIN_DATA` to a directory outside the repository if you prefer a location other than `~/SharedBrain`.
 
-1. Copy `examples/config.example.json` to the data directory as `config.json` and set the model URL and ID. Keep model credentials in an environment variable if your endpoint needs them.
+1. Copy `examples/config.example.json` to the data directory as `config.json`. Set the model URL and ID if you plan to summarize historical sessions with `backfill`. Keep model credentials in an environment variable if your endpoint needs them.
 2. Set `AGENTSVIEW_BIN` if the binary is outside your PATH. Stop the AgentsView daemon for this archive, then run `node collect.mjs` to prepare redacted input and update the index. To refresh selected inputs, pass source names, for example `node collect.mjs kimi-work cowork`. Agent Brain starts an authenticated loopback query service when needed.
 3. Run `python3 brain.py backfill` to summarize historical sessions and generate `_index.md`, `card.md` and `log.md` in the data directory. Add `--agent kimi-work --sort messages:asc --limit 8` to try a small batch of short sessions. Repeated runs skip completed unchanged sessions.
 4. Connect each client to the stdio command `python3 /absolute/path/to/agent-brain/brain.py mcp`, with the same `AGENT_BRAIN_DATA`. Add [the skill](skills/agent-brain/SKILL.md) or copy its instructions into the client.
@@ -63,6 +63,16 @@ Run `python3 scripts/demo.py`. A fictional Codex work log appears in the same pr
 The same handoff was tested in Claude Cowork by opening the generated Markdown card in a test folder and asking, “For Fictional Atlas, give its current progress, rollback owner, next step, and Codex source.” Cowork returned the prepared checklist, the release coordinator, the Friday dry run and the `codex:fictional-atlas-demo` reference. Cowork also ran the local Python CLI against the fictional data and recorded a `log_work` entry. The test used sibling `code/` and `data/` directories in the mounted folder.
 
 ![Fictional Codex-to-Cowork project progress demo](examples/demo.svg)
+
+## FAQ
+
+**What does Agent Brain add to a conversation archive?** AgentsView indexes old messages. Agent Brain organizes evidence from those messages and new work logs by project, task deliverable and scoped requirement. A note-based workflow can also record work directly with `log_work`.
+
+**When does a model run?** The MCP reads existing packets and registered files locally. A separately initiated backfill or packet extraction run uses its configured model. This lets the client model spend its context on the brief and fetch one relevant file section if needed.
+
+**Why can a chat be searchable before it appears in the card?** Indexing and project extraction advance separately. A client can record the deliverable immediately with `log_work`. Use `health` to inspect collection and refresh status.
+
+**How can I read a long or missing deliverable?** Expand the project’s `deliverables` section and use `read_file` for a registered file. For a historical file that moved, `register-path` can link a verified copy of the same filename.
 
 ## Data
 
