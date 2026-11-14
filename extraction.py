@@ -11,6 +11,7 @@ from pathlib import Path
 REVISION = 12
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
+APP_SNAPSHOT = re.compile(r'<appshot\b[^>]*>.*?</appshot>', re.I | re.S)
 HANDOFF = re.compile(r'已(?:交付|保存|生成|完成|写入|提交|更新|核对|定稿|落盘|导出)|'
                      r'(?:文档|报告|方案|材料|表格|文件|稿子)(?:写|做|改)好了|做完|写完|完成了|'
                      r'已附|交付如下|可直接(?:转发|使用|复制|发送)|\b(?:delivered|saved|completed|verified|attached|ready)\b', re.I)
@@ -120,6 +121,7 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused
         if outbound and row['role'] == 'user' and re.match(r'(?i)^\[(?:Reply from|Automated message|Tool result)\b', text):
             continue
         # Keep only file references from attachments and omit tool bodies.
+        text = APP_SNAPSHOT.sub('', text)
         text = re.sub(r'<(file_contents|document_content|tool_result|tool_output|selection|document_body)\b[^>]*>.*?</\1>',
                       '', text, flags=re.I | re.S)
         text = re.sub(r'(?ms)^\[(Thinking|Tool result|Tool output)\].*?^\[/\1\][ \t]*\n?', '', text)

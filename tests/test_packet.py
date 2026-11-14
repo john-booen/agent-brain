@@ -456,6 +456,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             ('user', '[Reply from imported agent] PRIVATE_AGENT_REPLY'),
             ('user', 'Gather the test evidence. [tool:read]'),
             ('assistant', 'The first version was saved in the workspace. <tool_output>PRIVATE_TOOL</tool_output>'),
+            ('user', '<appshot app="Example">PRIVATE_APP_SNAPSHOT report report</appshot>\nPlease verify the report.'),
         ])
         settings = {'enabled': True, 'url': 'http://127.0.0.1:3425/v1', 'name': brain.eco.MODEL}
         (self.data / 'config.json').write_text(json.dumps({'eco': settings}))
@@ -470,6 +471,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertNotIn('PRIVATE_QUOTE', str(messages))
             self.assertNotIn('PRIVATE_AGENT_REPLY', str(messages))
             self.assertNotIn('PRIVATE_TOOL', str(messages))
+            self.assertNotIn('PRIVATE_APP_SNAPSHOT', str(messages))
+            self.assertIn('Please verify the report.', str(messages))
             self.assertIn('15 句口径', str(messages))
             self.assertEqual(kwargs['settings']['max_tokens'], 16000)
             self.assertEqual(kwargs['settings']['extra_body']['reasoning_effort'], 'low')
@@ -488,6 +491,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             local = self.tool('recall', project='Atlas', question='Which report is done?',local_only=True)
             self.assertEqual(local['route'],'local')
             self.assertIn(2,[row['ordinal'] for row in local['evidence']])
+            self.assertTrue(all(local['sessions'][row['session']]==sid for row in local['evidence']))
             self.assertEqual(model.call_count,1)
         self.assertEqual(brain.eco.snapshot(self.db, settings)['24h']['used_or_reserved'], 9)
         audit = json.loads((self.data/'recall_evidence.jsonl').read_text().splitlines()[0])
@@ -500,6 +504,23 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
         self.assertEqual((answer['level'],answer['route']), (3,'local'))
         self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
+
+    def test_local_recall_pairs_both_user_turns_with_an_answer(self):
+        sid = 'codex:fictional-local-recall'
+        evidence = {
+            str(ordinal): {'session_id':sid,'ordinal':ordinal,'role':role,'text':value}
+            for ordinal,role,value in [(9,'assistant','The schedule is attached.'),
+                                      (15,'assistant','Unrelated recap.'),
+                                      (8,'user','Use a plain-text schedule.'),
+                                      (10,'user','Keep the existing dates.'),
+                                      (11,'assistant','The existing dates are preserved.')]
+        }
+        page = brain.recall.local_evidence(evidence,brain.json_text,None)
+        self.assertEqual([row['ordinal'] for row in page['evidence']][:3],[9,8,10])
+        if 'next_offset' in page:
+            following = brain.recall.local_evidence(evidence,brain.json_text,None,page['next_offset'])
+            self.assertFalse({row['ordinal'] for row in page['evidence']}
+                             & {row['ordinal'] for row in following['evidence']})
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'

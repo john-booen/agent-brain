@@ -213,7 +213,7 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
     short_terms -= {'什么','哪份','哪里','哪个','当时','时候','怎么','哪一','那轮','上一','一轮','要怎','做了','改了'}
 
     def relevance(text):
-        text = text.casefold()
+        text = extraction.APP_SNAPSHOT.sub('', text).casefold()
         return (sum(term in text for term in terms)*2 + sum(term in text for term in short_terms)
                 + 4*len(quantities & numbered_details(text)))
 
@@ -255,7 +255,7 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
                 found[sid][ordinal] = score + 18
         for ordinal, (text, logged) in seeds[sid].items():
             score = relevance(text)
-            found[sid][ordinal] = max(found[sid].get(ordinal,0), 2+score*2+(10 if logged else 0))
+            found[sid][ordinal] = max(found[sid].get(ordinal,0),2+score*2+(10 if logged else 0))
     tags = local_tags(db, [(sid,v[0]) for sid,v in metadata.items()],question) if use_tags else []
     for score, _, sid, _, tag in tags:
         for ordinal in tag['anchors']:
@@ -390,18 +390,42 @@ def bounded(result, encode, count):
 
 def local_evidence(evidence, encode, count, offset=0, reason=''):
     rows=list(evidence.values())
-    result={'level':3,'route':'local','status':'原文证据','evidence':[]}
+    by_session = defaultdict(list)
+    for row in rows:
+        by_session[row['session_id']].append(row)
+    adjacent = defaultdict(list)
+    for session in by_session.values():
+        chronological = sorted(session,key=lambda row:row['ordinal'])
+        for previous, current in zip(chronological,chronological[1:]):
+            gap = current['ordinal'] - previous['ordinal']
+            if gap<=8 and previous['role']!=current['role']:
+                adjacent[current['session_id'],current['ordinal']].append(previous)
+                adjacent[previous['session_id'],previous['ordinal']].append(current)
+    ranked = []
+    seen = set()
+    for position, row in enumerate(rows):
+        neighbors = adjacent.get((row['session_id'],row['ordinal']),()) if position<16 else ()
+        for item in (row,*neighbors):
+            key = item['session_id'],item['ordinal']
+            if key not in seen:
+                ranked.append(item)
+                seen.add(key)
+    result={'level':3,'route':'local','status':'原文证据','sessions':{},'evidence':[]}
+    session_refs = {}
     if reason:
         result['reason']=reason
     limit=800
-    for position,row in enumerate(rows[offset:],offset):
-        item={'session_id':row['session_id'],'ordinal':row['ordinal'],'role':row['role']}
+    for position,row in enumerate(ranked[offset:],offset):
+        sid = row['session_id']
+        ref = session_refs.setdefault(sid,str(len(session_refs)+1))
+        item={'session':ref,'ordinal':row['ordinal'],'role':row['role']}
         if row.get('files'):
             item['files']=[Path(p).name[:120] for p in row['files'][:2]]
         if row.get('inline_sections'):
             item['inline_sections']=row['inline_sections']
-        item['text']=extraction.text_excerpt(row['text'],150 if position-offset<3 else 92)
-        candidate={**result,'evidence':[*result['evidence'],item],'next_offset':position+1}
+        item['text']=extraction.text_excerpt(row['text'],140 if position-offset<3 else 75)
+        candidate={**result,'sessions':{**result['sessions'],ref:sid},
+                   'evidence':[*result['evidence'],item],'next_offset':position+1}
         encoded=encode(candidate)
         if (count(encoded) if count else len(encoded.encode()))>limit:
             break
