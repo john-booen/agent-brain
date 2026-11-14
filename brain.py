@@ -1129,6 +1129,10 @@ def extract_packets(db, args):
     if any(type(value) is not int or value <= 0 for value in (cap, window)):
         raise ValueError("Packet extraction token caps must be positive integers")
     ids = args.session
+    if not ids and settings.get('roster'):
+        ids = json.loads(Path(settings['roster']).read_text())
+        if not isinstance(ids, list) or not ids or any(not isinstance(sid, str) or not sid for sid in ids):
+            raise ValueError('packet_extraction.roster must be a nonempty JSON array of session IDs')
     if not ids:
         with closing(sqlite3.connect((DATA / 'agentsview/sessions.db').as_uri() + '?mode=ro', uri=True)) as index:
             roster = index.execute("""SELECT id,transcript_revision FROM sessions WHERE deleted_at IS NULL
