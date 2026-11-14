@@ -71,6 +71,15 @@ def install_kimi(home, data, command):
     print(f'Kimi plugin folder: {plugin}')
 
 
+def self_check(data):
+    env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'AGENT_BRAIN_DATA': data, 'AGENT_BRAIN_USAGE_ORIGIN': 'test'}
+    result = subprocess.run([COMMAND, '-B', *ARGS], text=True, input='{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+                            env=env, stdout=subprocess.PIPE, check=True, timeout=20)
+    if len(json.loads(result.stdout)['result']['tools']) != 7:
+        raise ValueError('The local MCP server did not advertise all seven tools')
+    print('Local MCP self-check passed.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--home', type=Path, default=Path.home())
@@ -109,6 +118,7 @@ def main():
         elif source == 'kimi-work':
             install_kimi(home, data, command)
         print(f'Staged {source} configuration')
+    self_check(data)
     if args.demo:
         subprocess.run([COMMAND, '-B', str(ROOT / 'scripts/demo.py')], check=True)
 
