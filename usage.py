@@ -84,6 +84,22 @@ def observed_usage(directory, day=None):
             'first_day': str(start), 'last_day': str(day)}
 
 
+def delivery_writeback(db, start, finish):
+    deliveries = defaultdict(set)
+    written = defaultdict(set)
+    rows = db.execute("""SELECT source,session_id,kind,data FROM work
+                      WHERE session_id IS NOT NULL AND occurred>=? AND occurred<?""", (start, finish))
+    for source, sid, kind, payload in rows:
+        data = json.loads(payload)
+        files = data.get('files', []) + data.get('deliverables', [])
+        if any(item.get('status') in {'已交付', '用户确认'} for item in files):
+            deliveries[source].add(sid)
+        if kind == 'log':
+            written[source].add(sid)
+    return {source: {'delivery_sessions': len(sessions), 'with_writeback': len(sessions & written[source])}
+            for source, sessions in sorted(deliveries.items())}
+
+
 def weekly(db, data, date=None):
     local = ZoneInfo('Asia/Shanghai')
     day = date or datetime.now(local).date()
@@ -105,10 +121,16 @@ def weekly(db, data, date=None):
               '|---|---|---:|---:|---:|---:|']
     for (source, tool), row in sorted(totals.items()):
         report.append(f"| {source} | {tool} | {row['calls']} | {row['hits']} | {row['measured']} | {row['tokens']} |")
+    bounds = tuple(value.astimezone(timezone.utc).isoformat() for value in (start, finish))
+    report.extend(['', '## 已登记文件交付的会话回写', '',
+                   '按已有文件交付和会话编号关联，供抽查。无会话编号和仅正文交付的会话无法用此口径计数。', '',
+                   '| 客户端 | 有已登记文件交付 | 有关联工作日志 |', '|---|---:|---:|'])
+    for source, row in delivery_writeback(db, *bounds).items():
+        report.append(f"| {source} | {row['delivery_sessions']} | {row['with_writeback']} |")
     projects = ['# 本周各项目动态', '', f'{start.date()} 至 {finish.date() - timedelta(days=1)}', '']
     for row in db.execute("""SELECT p.name,w.source,w.occurred,w.data FROM work w JOIN projects p ON p.id=w.project_id
                            WHERE w.occurred>=? AND w.occurred<? ORDER BY p.name, w.occurred DESC""",
-                          (start.astimezone(timezone.utc).isoformat(), finish.astimezone(timezone.utc).isoformat())):
+                          bounds):
         item = json.loads(row['data'])
         summary = ' '.join(item['summary'].split())[:260]
         projects.append(f"- **{row['name']}** · {row['source']} · {row['occurred'][:10]} · {summary}")
