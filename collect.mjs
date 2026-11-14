@@ -154,16 +154,17 @@ async function main() {
   const lock = await fs.open(lockPath, 'wx', 0o600).catch(async error => {
     if (error.code !== 'EEXIST') throw error;
     const old = await fs.stat(lockPath);
-    if (Date.now() - old.mtimeMs < 30 * 60 * 1000) throw error;
+    if (Date.now() - old.mtimeMs < 30 * 60 * 1000) return null;
     const pid = Number(await fs.readFile(lockPath, 'utf8'));
     if (Number.isSafeInteger(pid) && pid > 0) {
-      try { process.kill(pid, 0); throw error; }
+      try { process.kill(pid, 0); return null; }
       catch (check) { if (check.code !== 'ESRCH') throw check; }
     }
     if ((await fs.stat(lockPath)).ino !== old.ino) throw error;
     await fs.unlink(lockPath);
     return fs.open(lockPath, 'wx', 0o600);
   });
+  if (!lock) return;
   await lock.writeFile(String(process.pid));
   try { await collect(); }
   catch (error) {
