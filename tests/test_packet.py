@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+from time import sleep
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -76,8 +77,9 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(todo.read_text(), '# Pending work\n')
         self.assertNotIn('coverage', self.tool('get_project', project='Atlas'))
-        self.assertEqual([json.loads(line)['status'] for line in
-                          (self.data / 'health.log').read_text().splitlines()], ['failed', 'failed', 'failed', 'ok'])
+        events = [json.loads(line) for line in (self.data / 'health.log').read_text().splitlines()]
+        self.assertEqual([event['status'] for event in events if event['event'] == 'packet_refresh'],
+                         ['failed', 'failed', 'failed', 'ok'])
 
         source_dir = self.root / '.codex' / 'sessions'
         source_dir.mkdir(parents=True)
@@ -90,12 +92,20 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(self.tool('get_project', project='Atlas')['coverage'], '部分来源采集不完整')
         self.assertEqual(self.tool('list_projects')['coverage'], '部分来源采集不完整')
         events = [json.loads(line) for line in (self.data / 'health.log').read_text().splitlines()]
-        self.assertEqual(events[-2]['event'], 'source_collection')
-        self.assertEqual(events[-2]['skippedLines'], 1)
+        partial, = [event for event in events if event['event'] == 'source_collection']
+        self.assertEqual(partial['skippedLines'], 1)
         transcript.write_text('{"fictional":true}\n')
         result = subprocess.run(cmd, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('coverage', self.tool('get_project', project='Atlas'))
+
+        builder.write_text('#!/bin/sh\ncase "$*" in *--files*) exit 7;; esac\n')
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        report = json.loads((self.data / 'coverage.json').read_text())
+        self.assertEqual(report['packetRefresh']['status'], 'ok')
+        self.assertEqual(report['fileRefresh']['status'], 'failed')
+        self.assertIn('文件摘要可能过期', self.tool('get_project', project='Atlas')['coverage'])
 
     def test_confirmed_version_scoped_requirements_and_read_file(self):
         v1 = self.root / 'old.md'
@@ -409,6 +419,19 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertNotIn('Introduction', summary)
         self.db.execute("UPDATE packet_file_summaries SET method='extractive'")
         self.assertIsNone(brain.packet.file_summary(self.db, str(path)))
+        self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'built')
+
+    def test_background_summary_defers_a_cloud_placeholder(self):
+        path = self.root / 'cloud-placeholder.md'
+        path.write_text('# Fictional placeholder')
+        with patch.object(brain.file_text, 'local_file_available', return_value=False), \
+                patch.object(brain.file_text, 'read_bytes') as read:
+            self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'unavailable')
+            self.assertEqual(brain.packet.summary_status(self.db, str(path)), '文件尚未下载到本机')
+            read.assert_not_called()
+
+        with patch.object(brain.file_text, 'read_bytes', side_effect=lambda _: sleep(5)):
+            self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean, open_timeout=0.02)[0], 'unavailable')
         self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'built')
 
 

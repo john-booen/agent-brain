@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import signal
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -684,6 +685,8 @@ def summary_status(db, value):
         if path.suffix.lower() not in file_text.SUPPORTED:
             return '格式待支持'
         st = path.stat()
+        if not file_text.local_file_available(st):
+            return '文件尚未下载到本机'
     except OSError:
         return '本机文件未找到'
     fingerprint = f'{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}'
@@ -691,10 +694,26 @@ def summary_status(db, value):
     return {'no_text': '未提取到正文', 'unreadable': '文件提取失败'}.get(state['status'] if state else '', '摘要待生成')
 
 
-def prepare_file(db, value, clean, force=False):
+def read_file_for_summary(path, timeout):
+    if timeout is None:
+        return file_text.read_bytes(path)
+    def end_read(*_):
+        raise TimeoutError('File did not become available in time')
+    previous = signal.signal(signal.SIGALRM, end_read)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        return file_text.read_bytes(path)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def prepare_file(db, value, clean, force=False, open_timeout=None):
     try:
         path = file_text.document_path(value)
         before = path.stat()
+        if not file_text.local_file_available(before):
+            return 'unavailable', None, None
         fingerprint = f'{before.st_dev}:{before.st_ino}:{before.st_size}:{before.st_mtime_ns}:{before.st_ctime_ns}'
     except FileNotFoundError:
         return 'missing', None, None
@@ -713,7 +732,7 @@ def prepare_file(db, value, clean, force=False):
         if summary and summary['method'] == FILE_SUMMARY_METHOD:
             return 'cached', summary['summary'], summary['method']
     try:
-        data = file_text.read_bytes(path)
+        data = read_file_for_summary(path, open_timeout)
         after = path.stat()
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             return 'changed', None, None
@@ -730,6 +749,8 @@ def prepare_file(db, value, clean, force=False):
                 return 'no_text', None, None
             method = FILE_SUMMARY_METHOD
             status = 'built'
+    except TimeoutError:
+        return 'unavailable', None, None
     except (OSError, ValueError):
         with db:
             db.execute('INSERT OR REPLACE INTO packet_file_failures VALUES(?,?,?)', (value, fingerprint, 'unreadable'))

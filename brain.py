@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from time import monotonic
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -365,6 +366,8 @@ def packet_coverage():
     refresh = report.get("packetRefresh") or {}
     if refresh.get("status") == "failed":
         return {"coverage": "资料袋可能过期（最近刷新失败）"}
+    if report.get('fileRefresh', {}).get('status') == 'failed':
+        return {"coverage": "部分文件摘要可能过期（最近刷新失败）"}
     if any(item.get('failed') or item.get('syncIncomplete') or item.get('skippedLines') for item in report.get('sources', {}).values()):
         return {'coverage': '部分来源采集不完整'}
     return {}
@@ -1561,9 +1564,13 @@ def build_packets(db, args):
         ids = [row['id'] for row in packet.active_projects(db, args.days, args.min_records)]
     if args.limit:
         ids = ids[:args.limit]
+    budget = getattr(args, 'file_budget', 0)
+    if not 0 <= budget <= 55:
+        raise ValueError('Set a file processing budget between 0 and 55 seconds')
+    expires_at = monotonic() + budget if budget else float('inf')
     counts = {'projects': 0, 'rebuilt': 0, 'with_inputs': 0, 'with_deliverables': 0, 'with_rules': 0,
               'built': 0, 'cached': 0, 'missing': 0, 'unsupported': 0, 'unavailable': 0, 'unreadable': 0,
-              'no_text': 0, 'changed': 0, 'failed_projects': 0}
+              'no_text': 0, 'changed': 0, 'deferred_files': 0, 'failed_projects': 0}
     seen = set()
     for pid in ids:
         try:
@@ -1585,7 +1592,12 @@ def build_packets(db, args):
                 if Path(value).is_absolute() and (Path(value).is_relative_to(DATA) or Path(value).is_relative_to(REPO)):
                     counts['unavailable'] += 1
                     continue
-                status, _, _ = packet.prepare_file(db, value, clean, force=args.force)
+                remaining = expires_at - monotonic()
+                if remaining <= 0:
+                    counts['deferred_files'] += 1
+                    continue
+                status, _, _ = packet.prepare_file(db, value, clean, force=args.force,
+                                                   open_timeout=min(2, remaining) if budget else None)
                 counts[status] += 1
         if counts['projects'] % 20 == 0:
             print(json_text(counts), file=sys.stderr, flush=True)
@@ -1660,6 +1672,7 @@ def main():
     packet_run.add_argument('--min-records', type=int, default=2)
     packet_run.add_argument('--limit', type=int, default=0)
     packet_run.add_argument('--files', action='store_true')
+    packet_run.add_argument('--file-budget', type=float, default=0)
     packet_run.add_argument('--force', action='store_true')
     extract_run = commands.add_parser('extract-packets', help='Extract evidence from archived chats through the configured Eco route')
     extract_run.add_argument('--session', action='append')

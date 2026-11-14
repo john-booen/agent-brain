@@ -28,7 +28,8 @@ def report(db, directory):
                          AND NOT EXISTS (SELECT 1 FROM packet_extractions e WHERE e.session_id=w.session_id)""").fetchone()[0]
     return {'at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'sources': sources,
             'last_collection': coverage.get('completedAt'), 'collector_exit': coverage.get('exit'),
-            'packet_refresh': coverage.get('packetRefresh'), 'pending_summary_sessions': indexed,
+            'packet_refresh': coverage.get('packetRefresh'), 'file_refresh': coverage.get('fileRefresh'),
+            'pending_summary_sessions': indexed,
             'model_last_24h': dict(zip(('attempts','measured_input_tokens','measured_output_tokens','reserved_tokens'), totals)),
             'collector_observation': collector_observation(directory),
             'client_usage': usage.observed_usage(directory),
@@ -54,7 +55,7 @@ def collector_observation(directory, now=None):
             if at.tzinfo is None:
                 continue
             kind = event.get('event')
-            if at > now or kind not in {'packet_refresh', 'collector', 'source_collection'}:
+            if at > now or kind not in {'packet_refresh', 'file_refresh', 'collector', 'source_collection'}:
                 continue
             if at < start and kind == 'packet_refresh':
                 last_before = max(last_before or at, at)

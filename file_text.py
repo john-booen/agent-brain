@@ -5,6 +5,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
@@ -13,6 +14,7 @@ from zipfile import BadZipFile, ZipFile
 SUPPORTED = {".docx", ".pdf", ".xlsx", ".md", ".markdown", ".txt", ".csv", ".tsv"}
 MAX_FILE = 40 * 1024 * 1024
 MAX_XML = 16 * 1024 * 1024
+MACOS_DATALESS = 0x40000000  # SF_DATALESS in Darwin sys/stat.h
 DOCUMENT_KINDS = {
     '.docx': 'Word 文档', '.pdf': 'PDF 文档', '.xlsx': 'Excel 工作簿',
     '.md': 'Markdown 文档', '.markdown': 'Markdown 文档', '.txt': '文本',
@@ -66,6 +68,10 @@ def read_bytes(path):
     if len(data) > MAX_FILE or (st.st_size, st.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise ValueError("文件读取期间发生变化，请重新查询")
     return data
+
+
+def local_file_available(file_stat):
+    return not (sys.platform == 'darwin' and getattr(file_stat, 'st_flags', 0) & MACOS_DATALESS)
 
 
 def xml(book, name):
