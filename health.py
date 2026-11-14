@@ -1,4 +1,5 @@
 """Local health reports and SQLite snapshots."""
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -84,7 +85,7 @@ def backup(db, directory, retain=7):
     dest = path / f'brain-{day}.sqlite'
     if not dest.exists():
         temp = dest.with_suffix('.tmp')
-        with sqlite3.connect(temp) as snapshot:
+        with closing(sqlite3.connect(temp)) as snapshot:
             db.backup(snapshot)
             if snapshot.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise ValueError('SQLite backup did not pass integrity check')

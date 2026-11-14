@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -244,7 +245,7 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
     if last_limited and datetime.now(timezone.utc) < datetime.fromisoformat(last_limited) + timedelta(hours=5):
         stats['rate_limited'] = True
         return stats
-    with sqlite3.connect(path.as_uri()+'?mode=ro', uri=True) as index:
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro', uri=True)) as index:
         index.row_factory = sqlite3.Row
         for sid in dict.fromkeys(ids):
             if stats['processed'] + stats['failed'] >= limit:
