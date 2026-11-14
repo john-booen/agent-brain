@@ -393,19 +393,19 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
     by_session = defaultdict(list)
     for row in rows:
         by_session[row['session_id']].append(row)
-    adjacent = defaultdict(list)
+    adjacent = {}
     for session in by_session.values():
         chronological = sorted(session,key=lambda row:row['ordinal'])
         for previous, current in zip(chronological,chronological[1:]):
             gap = current['ordinal'] - previous['ordinal']
-            if gap<=8 and previous['role']!=current['role']:
-                adjacent[current['session_id'],current['ordinal']].append(previous)
-                adjacent[previous['session_id'],previous['ordinal']].append(current)
+            if gap<=8 and previous['role']=='user' and current['role']=='assistant':
+                adjacent[current['session_id'],current['ordinal']]=previous
+                adjacent[previous['session_id'],previous['ordinal']]=current
     ranked = []
     seen = set()
     for position, row in enumerate(rows):
-        neighbors = adjacent.get((row['session_id'],row['ordinal']),()) if position<16 else ()
-        for item in (row,*neighbors):
+        neighbor = adjacent.get((row['session_id'],row['ordinal'])) if position<16 else None
+        for item in (row,neighbor) if neighbor else (row,):
             key = item['session_id'],item['ordinal']
             if key not in seen:
                 ranked.append(item)

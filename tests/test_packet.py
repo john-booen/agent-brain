@@ -505,7 +505,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual((answer['level'],answer['route']), (3,'local'))
         self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
 
-    def test_local_recall_pairs_both_user_turns_with_an_answer(self):
+    def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
         evidence = {
             str(ordinal): {'session_id':sid,'ordinal':ordinal,'role':role,'text':value}
@@ -515,12 +515,16 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                                       (10,'user','Keep the existing dates.'),
                                       (11,'assistant','The existing dates are preserved.')]
         }
-        page = brain.recall.local_evidence(evidence,brain.json_text,None)
-        self.assertEqual([row['ordinal'] for row in page['evidence']][:3],[9,8,10])
-        if 'next_offset' in page:
-            following = brain.recall.local_evidence(evidence,brain.json_text,None,page['next_offset'])
-            self.assertFalse({row['ordinal'] for row in page['evidence']}
-                             & {row['ordinal'] for row in following['evidence']})
+        def measure(value):
+            return 355 * len(json.loads(value)['evidence'])
+
+        page = brain.recall.local_evidence(evidence,brain.json_text,measure)
+        self.assertEqual([row['ordinal'] for row in page['evidence']][:2],[9,8])
+        following = brain.recall.local_evidence(evidence,brain.json_text,measure,page['next_offset'])
+        self.assertEqual([row['ordinal'] for row in following['evidence']],[15,10])
+        last = brain.recall.local_evidence(evidence,brain.json_text,measure,following['next_offset'])
+        self.assertEqual([row['ordinal'] for row in last['evidence']],[11])
+        self.assertNotIn('next_offset',last)
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'
