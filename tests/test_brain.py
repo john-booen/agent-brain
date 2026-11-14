@@ -169,6 +169,29 @@ class BrainTest(unittest.TestCase):
         self.assertEqual(brain.stream_choice(stream, measured.update)['finish_reason'], 'length')
         self.assertEqual(measured, {"prompt_tokens": 12, "completion_tokens": 8})
 
+    def test_eco_stream_failure_keeps_late_usage_or_reservation(self):
+        settings = {'enabled':True,'url':'http://127.0.0.1:1234/v1','name':brain.eco.MODEL}
+        error = b'data: {"error":{"message":"upstream reset"}}'
+        end = b'data: [DONE]'
+        zeros = b'data: {"usage":{"prompt_tokens":0,"completion_tokens":0}}'
+        receipt = b'data: {"usage":{"prompt_tokens":1000,"completion_tokens":500}}'
+        for frames in ([error,zeros,receipt,end],[error,zeros,end]):
+            def sender(messages, **kwargs):
+                return brain.stream_choice(iter(frames), kwargs['on_usage'])
+
+            with self.assertRaises(brain.ModelRouteError):
+                brain.eco.call(self.db,settings,[], 'test-stream', sender, brain.json_text)
+        def truncated(messages, **kwargs):
+            kwargs['on_usage']({'prompt_tokens':1000,'completion_tokens':7500})
+            raise brain.eco.OutputTruncated('Unexpected output ceiling')
+
+        with self.assertRaises(brain.eco.OutputTruncated):
+            brain.eco.call(self.db,settings,[], 'test-output', truncated, brain.json_text)
+        rows = self.db.execute('SELECT status,charge,reserved FROM eco_requests ORDER BY id').fetchall()
+        self.assertEqual([(r['status'],r['charge']) for r in rows], [('failed',9),('unmeasured',rows[1]['reserved']),('truncated',93)])
+        aggregate = brain.eco.snapshot(self.db,settings)['24h']
+        self.assertEqual(aggregate['unmeasured_or_held'],rows[1]['reserved'])
+
     def test_reconcile_two_names_for_the_same_project(self):
         payload = {"reason": "Both messages discuss the same release."}
         results = [(0, "Fictional Atlas", payload), (1, "Atlas release checklist", payload)]

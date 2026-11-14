@@ -14,6 +14,17 @@ class BudgetUnavailable(RuntimeError):
     pass
 
 
+class OutputTruncated(ValueError):
+    pass
+
+
+def complete_usage(bill):
+    input_tokens = bill.get('prompt_tokens')
+    output_tokens = bill.get('completion_tokens')
+    return (type(input_tokens) is int and input_tokens > 0
+            and type(output_tokens) is int and output_tokens >= 0)
+
+
 def schema(db):
     db.executescript("""
         CREATE TABLE IF NOT EXISTS eco_requests(
@@ -45,7 +56,8 @@ def snapshot(db, settings, instant=None):
     windows = {}
     for label, duration, cap in (('24h', 1, day), ('7d', 7, week)):
         used, held = db.execute("""SELECT COALESCE(SUM(charge),0),
-                   COALESCE(SUM(CASE WHEN status IN ('started','unmeasured') THEN charge ELSE 0 END),0)
+                   COALESCE(SUM(CASE WHEN input_tokens IS NULL OR input_tokens<=0 OR output_tokens IS NULL OR output_tokens<0
+                                     THEN charge ELSE 0 END),0)
                    FROM eco_requests WHERE at>=?""", ((instant-timedelta(days=duration)).isoformat(),)).fetchone()
         windows[label] = {'used_or_reserved': used, 'unmeasured_or_held': held, 'limit': cap,
                           'warning': used * 5 >= cap * 4}
@@ -84,7 +96,7 @@ def call(db, settings, messages, purpose, send, encode, *, recall=False, enforce
     held = credit_bound(len(encode(messages).encode()) + 1024, output_limit)
     request = reserve(db, settings, purpose, held, enforce_budget=enforce_budget)
     bill = {}
-    status = 'unmeasured'
+    status = 'failed'
     try:
         result = send(messages, settings={
             'url': url, 'name': MODEL, 'max_tokens': output_limit, 'timeout': 45,
@@ -99,16 +111,21 @@ def call(db, settings, messages, purpose, send, encode, *, recall=False, enforce
         if type(exc).__name__ == 'ModelQuotaError':
             status = 'rate_limited'
         raise
+    except OutputTruncated:
+        status = 'truncated'
+        raise
     finally:
         input_tokens = bill.get('prompt_tokens')
         output_tokens = bill.get('completion_tokens')
         details = bill.get('completion_tokens_details') or {}
         reasoning = details.get('reasoning_tokens') if isinstance(details, dict) else None
-        measured = all(type(n) is int and n >= 0 for n in (input_tokens, output_tokens))
+        measured = complete_usage(bill)
         charge = credit_bound(input_tokens, output_tokens) if measured else held
+        if reasoning is not None and (type(reasoning) is not int or reasoning < 0):
+            reasoning = None
         with db:
             db.execute("""UPDATE eco_requests SET charge=?,status=?,input_tokens=?,output_tokens=?,reasoning_tokens=? WHERE id=?""",
                        (charge, status if measured or status == 'rate_limited' else 'unmeasured',
                         input_tokens if type(input_tokens) is int else None,
                         output_tokens if type(output_tokens) is int else None,
-                        reasoning if type(reasoning) is int else None, request))
+                        reasoning, request))

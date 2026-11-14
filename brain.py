@@ -13,6 +13,7 @@ from time import monotonic
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -1077,7 +1078,9 @@ class ModelRouteError(RuntimeError):
 def stream_choice(response, on_usage=None):
     content = []
     finish = None
-    for line in response:
+    usage = {}
+    response_iterator = iter(response)
+    for line in response_iterator:
         if not line.startswith(b"data: "):
             continue
         payload = line[6:].strip()
@@ -1088,6 +1091,7 @@ def stream_choice(response, on_usage=None):
             raise ValueError("Expected an object in the model stream")
         reported_usage = event.get("usage")
         if on_usage and isinstance(reported_usage, dict):
+            usage.update(reported_usage)
             on_usage(reported_usage)
         if event.get("error"):
             error = event["error"]
@@ -1095,6 +1099,24 @@ def stream_choice(response, on_usage=None):
             if finish == "length" or ("limit" in message and any(word in message for word in ("output", "completion", "length"))):
                 finish = "length"
                 continue
+            if on_usage and not eco.complete_usage(usage):
+                # A gateway can report the failed stream's final usage after its error event.
+                # Stop on a receipt or the end marker, within the existing HTTP read timeout.
+                try:
+                    for _ in range(8):
+                        tail = next(response_iterator).strip()
+                        if not tail or not tail.startswith(b'data: '):
+                            continue
+                        if tail == b'data: [DONE]':
+                            break
+                        frame = json.loads(tail[6:])
+                        if isinstance(frame, dict) and isinstance(frame.get('usage'), dict):
+                            usage.update(frame['usage'])
+                            on_usage(frame['usage'])
+                            if eco.complete_usage(usage):
+                                break
+                except (StopIteration, OSError, ValueError, HTTPException):
+                    pass
             raise ModelRouteError("Model stream returned an upstream error")
         choices = event.get("choices") or []
         if not isinstance(choices, list) or any(not isinstance(choice, dict) for choice in choices):
@@ -1167,8 +1189,10 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
         if exc.code in (401, 403, 502, 503, 504):
             raise ModelRouteError(f"Model endpoint returned HTTP {exc.code}") from exc
         raise
+    except HTTPException as exc:
+        raise ModelRouteError('Model connection ended before the response completed') from exc
     if choice.get("finish_reason") == "length":
-        raise ValueError("Model output reached its token budget")
+        raise eco.OutputTruncated("Model output reached its token budget")
     message = choice.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
