@@ -5,6 +5,8 @@ description: Recall project progress, decisions and deliverables across AI clien
 
 # Agent Brain
 
+When the user asks to use only local records, set `local_only: true` explicitly on every `recall` call, including follow-up pages or rephrased questions. Preserve the local-only instruction when you pass the question to the tool. Include `project` when you already know the name. Stop once you have the requested fact and a verifiable source.
+
 When the user asks to continue past work, identify a final deliverable, or recover a settled requirement, call `recall(question, project)` on your own. For a quick project overview, call `get_project`. Use `find_project` for an unclear name and `list_projects` for a cross-project overview. Skip project tools for unrelated new questions.
 
 For one fact about a named project, start with the relevant project section when it can answer the question. For example, use `get_project` with `section="conclusions"` for a recorded configuration or execution result. Once the requested fact and its requested source are verified, answer. Continue searching when the evidence is missing or conflicting. Cite message numbers returned for the same session, and match the level of detail the user asked for.
@@ -23,7 +25,7 @@ For a registered JSON deliverable, pass the project, file, original assistant se
 
 Use whole-session message hits, nearby context, project references, structured user choices and file/version links to choose evidence. Wording by itself must not exclude evidence. Strip tool bodies, reasoning blocks and internal control messages. For an overwritten file, use the historical delivery references and check the current fingerprint before continuing.
 
-When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or use `get_session` with that `session_id` and the exact `ordinal`. Set `local_only=true` when the user wants a lookup without calling Eco. Use source excerpts to verify the answer before acting.
+When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or use `get_session` with that `session_id` and the exact `ordinal`. Use source excerpts to verify the answer before acting.
 
 For an Eco response, `verified: citations` means the source reference and quote were checked. Verify any amount, deadline, approval or operative requirement against the excerpt or original message before acting.
 
