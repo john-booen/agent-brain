@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 2
+REVISION = 3
 MAX_INPUT_BYTES = 60_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -26,7 +26,11 @@ Use the existing project ID only when the session advances that project. An unkn
 with id null and a name. Separate unrelated tasks and multiple projects. Omit casual task prompts from rules.
 Use only explicit user confirmation of the delivered version. An instruction to revise a version does not
 confirm it. Omit confirmation when absent. A path must be exactly one of that message's file references.
-Use the user's ordinal for each rule, input, and confirmation. Use an assistant message for a deliverable."""
+Use the user's ordinal for each rule, input, and confirmation. Use an assistant message for a deliverable.
+Keep a single entry for a task's final version. Repeated work on the same event or company should use
+one project ID where the candidate names refer to the same effort. Rules must capture durable limits or
+output constraints, not general goals, ordinary requests, or facts about the project. List only the
+latest outstanding actions with clear evidence. Keep descriptions short and JSON concise."""
 
 
 def schema(db):
