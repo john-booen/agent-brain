@@ -10,7 +10,7 @@ from pathlib import Path
 import file_text
 
 
-VERSION = 17
+VERSION = 18
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -235,6 +235,10 @@ def rule_topic(text):
     return ' '.join(text.casefold().split())
 
 
+def normalize_rule(item):
+    return {**item, 'topic': item.get('topic') or rule_topic(item['text'])}
+
+
 def quoted_rules(text):
     for part in CLAUSE.finditer(text):
         value = re.sub(r'^\s*(?:(?:[-•]|\d{1,3}[.)、])\s*)?', '', part[0]).strip(' \t，')
@@ -333,8 +337,9 @@ def finish_entries(inputs, deliveries, rules, approvals):
             history.extend({'kind': '旧版本', **item} for item in options[1:])
     winners.sort(key=lambda item: (item.get('pinned', False), item.get('final', False), item['ref']['time']), reverse=True)
     decisions = {}
-    for item in sorted(rules, key=lambda item: item['ref']['time'], reverse=True):
-        key = (item.get('topic') or rule_topic(item['text']), item['scope'], item.get('task') or '')
+    for rule in sorted(rules, key=lambda item: item['ref']['time'], reverse=True):
+        item = normalize_rule(rule)
+        key = (item['topic'], item['scope'], item.get('task') or '')
         if key not in decisions:
             decisions[key] = item
         elif item['text'] != decisions[key]['text']:

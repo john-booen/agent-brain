@@ -740,7 +740,7 @@ def packet_log_item(value, kind):
         item.update(task=clean(task.strip())[:160], final=value.get('final') is True,
                     confirmed=value.get('confirmed') is True)
     else:
-        item = valid_item(value, 'conclusions', None)
+        item = packet.normalize_rule(valid_item(value, 'conclusions', None))
         scope = value.get('scope', '项目')
         if scope not in {'项目', '本任务', '对外版本'}:
             raise ValueError('Invalid rule scope')
@@ -771,7 +771,14 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
                 raise ValueError('Expected up to 30 packet items')
             payload[kind] = [packet_log_item(item, kind) for item in items]
     session_id = clean(session_id) if session_id else None
-    key = clean(work_id) if work_id else stable(json_text([project, source, session_id, payload]))
+    identity_payload = payload
+    if 'rules' in payload:
+        # Rules inferred on write must keep the same implicit work ID as older clients.
+        identity_payload = {**payload, 'rules': [
+            rule if original.get('topic') else {field: value for field, value in rule.items() if field != 'topic'}
+            for original, rule in zip(details['rules'], payload['rules'])
+        ]}
+    key = clean(work_id) if work_id else stable(json_text([project, source, session_id, identity_payload]))
     db.execute("BEGIN IMMEDIATE")
     try:
         pid, created = ensure_project(db, project, payload["reason"])
@@ -779,7 +786,10 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
                             (key, pid, "log", now(), source, session_id, json_text(payload)))
         existing = db.execute("SELECT project_id, source, session_id, data FROM work WHERE id=?", (key,)).fetchone()
         existing_project = resolve_project_id(db, existing['project_id'])
-        if (existing_project, *tuple(existing)[1:]) != (pid, source, session_id, json_text(payload)):
+        existing_payload = json.loads(existing['data'])
+        if 'rules' in existing_payload:
+            existing_payload['rules'] = [packet.normalize_rule(rule) for rule in existing_payload['rules']]
+        if (existing_project, existing['source'], existing['session_id'], existing_payload) != (pid, source, session_id, payload):
             raise ValueError("work_id already identifies different work")
         refresh(db, [pid])
         db.commit()

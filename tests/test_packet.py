@@ -27,6 +27,23 @@ class PacketTest(unittest.TestCase):
     def tool(self, name, **args):
         return brain.call_tool(self.db, name, args)
 
+    def test_optional_rule_topic_in_new_and_legacy_records(self):
+        file = self.root / 'source.md'
+        file.write_text('# Figures\nSource figures.')
+        args = dict(project='Atlas', summary='Review figures.', source='codex', work_id='legacy',
+                    inputs=[{'path': str(file)}], rules=[{'text': '对外口径保守'}])
+        record = self.tool('log_work', **args)
+        stored = json.loads(self.db.execute('SELECT data FROM work WHERE id=?', ('legacy',)).fetchone()[0])
+        self.assertEqual(stored['rules'][0].pop('topic'), '保守口径')
+        with self.db:
+            self.db.execute('UPDATE work SET data=? WHERE id=?', (json.dumps(stored), 'legacy'))
+        for section in (None, 'rules'):
+            card = self.tool('get_project', project=record['project_id'], **({'section': section} if section else {}))
+            self.assertIn('对外口径保守', card['card'])
+            self.assertLessEqual(brain.response_size(card), brain.QUERY_BYTES)
+        self.assertIn('Source figures', self.tool('read_file', project='Atlas', path=file.name, section='Figures')['text'])
+        self.assertFalse(self.tool('log_work', **args)['written'])
+
     def test_confirmed_version_scoped_requirements_and_read_file(self):
         v1 = self.root / 'old.md'
         v2 = self.root / 'new.md'
