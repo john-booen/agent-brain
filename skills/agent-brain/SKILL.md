@@ -21,7 +21,7 @@ For a registered JSON deliverable, pass the project, file, original assistant se
 
 Use whole-session message hits, nearby context, project references, structured user choices and file/version links to choose evidence. Wording by itself must not exclude evidence. Strip tool bodies, reasoning blocks and internal control messages. For an overwritten file, use the historical delivery references and check the current fingerprint before continuing.
 
-When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or open the exact source with `get_session(session_id, around=ordinal)`. Set `local_only=true` when the user wants a lookup without calling Eco. Use source excerpts to verify the answer before acting.
+When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or use `get_session` with that `session_id` and the exact `ordinal`. Set `local_only=true` when the user wants a lookup without calling Eco. Use source excerpts to verify the answer before acting.
 
 For an Eco response, `verified: citations` means the source reference and quote were checked. Verify any amount, deadline, approval or operative requirement against the excerpt or original message before acting.
 
@@ -35,7 +35,7 @@ When the user explicitly selects a final version or confirms a send, record it i
 - `deliverables`: records with a stable `task`. Use `path` for a file, or use `text` (8–240 characters quoted from the assistant's reply), `ordinal`, and the call's `session_id` for a chat-only output. Read the full chat output with `get_session`. Optional fields include `final` and `status` (草稿, 已交付, 已失效). `confirmed` applies to file deliveries with user confirmation evidence.
 - `rules`: objects with `text`, optionally `topic`, `ordinal`, `task` and `scope` (项目, 本任务, 对外版本).
 - `conclusions`, `todos` and `blockers`: objects with `text` and optional `topic` and `ordinal`. Existing integrations may use `files` objects with `path` and `status`.
-- `get_session`: use `around` with a source ordinal or continue with `start` and `text_offset`. In section and file results, use `next_offset` to continue.
+- `get_session`: use `ordinal` for one original message. Continue the same message with that `ordinal` and `next_text_offset` as `text_offset`. Verify the `revision` stays the same when joining pages. Use `around` for nearby messages or if the connected client has an older tool schema. Continue an excerpt with `start` and `text_offset`. In section and file results, use `next_offset` to continue.
 
 In Google Antigravity, use `source="antigravity"` when calling `log_work`. Antigravity conversation history is outside the current automatic archive.
 

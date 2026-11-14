@@ -1428,6 +1428,39 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         for result in (online, local):
             self.assertEqual([(row['ordinal'],row['text']) for row in result['messages']], expected)
 
+    def test_get_session_exact_ordinal_returns_only_the_requested_message(self):
+        sid = 'kimi-work:fictional-exact'
+        original = '保留原要求。' * 260
+        rows = [('user','Use the original wording.'), ('assistant',original), ('user','Future direction.')]
+        self.archive_messages(sid, 'Atlas', rows)
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent','file_path','ended_at','deleted_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute('UPDATE messages SET ordinal=ordinal*2')
+        returned = [{'ordinal':n*2,'role':role,'dialogue_text':line} for n,(role,line) in enumerate(rows)]
+        with patch.object(brain,'archive',side_effect=[{'session': {}}, {'messages': returned}]), \
+             patch.object(brain.usage,'token_counter',return_value=len):
+            exact = self.tool('get_session',session_id=sid,ordinal=2)
+            self.assertEqual([row['ordinal'] for row in exact['messages']],[2])
+            self.assertLessEqual(len(brain.json_text(exact)),brain.EXACT_MESSAGE_TOKENS)
+            self.assertNotIn('path',exact)
+        with patch.object(brain,'archive',side_effect=RuntimeError('Query service unavailable')), \
+             patch.object(brain.usage,'token_counter',return_value=None):
+            parts,offset = [],0
+            while True:
+                result = self.tool('get_session',session_id=sid,ordinal=2,text_offset=offset)
+                self.assertEqual([row['ordinal'] for row in result['messages']],[2])
+                self.assertLessEqual(brain.response_size(result),brain.QUERY_BYTES)
+                parts.append(result['messages'][0]['text'])
+                if 'next_text_offset' not in result:
+                    self.assertNotIn('next_from',result)
+                    break
+                self.assertGreater(result['next_text_offset'],offset)
+                offset = result['next_text_offset']
+            self.assertEqual(''.join(parts),original)
+            missing = self.tool('get_session',session_id=sid,ordinal=3)
+            self.assertEqual((missing['status'],missing['messages']),('没命中',[]))
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

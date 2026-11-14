@@ -43,6 +43,7 @@ ARRAYS = ("conclusions", "files", "todos", "blockers")
 # The configured clients use byte-based tokenizers. The serialized UTF-8
 # size bounds text tokens without sending project data to a token-count API.
 QUERY_BYTES = 1984
+EXACT_MESSAGE_TOKENS = 800
 PROJECT_LOOKUP_BYTES = 448
 PROJECT_CARD_BYTES = QUERY_BYTES - PROJECT_LOOKUP_BYTES
 PROJECT_SECTIONS = {
@@ -331,11 +332,23 @@ def read_session_excerpt(session_id, start, limit, around=None):
             'status':'ok' if messages else '内容不全'}
 
 
-def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
+def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, ordinal=None):
     if around is not None and (start or text_offset):
         raise ValueError("Use around for a new lookup, or start and text_offset to continue")
-    result = read_session_excerpt(session_id, start, limit, around)
-    if around is None and not text_offset and not result["messages"]:
+    exact = ordinal is not None
+    if exact and (around is not None or start):
+        raise ValueError("Use ordinal with text_offset to read a single message")
+    if exact:
+        archived = read_session_excerpt(session_id, 0, 1, ordinal)
+        messages = [{key: row[key] for key in ("ordinal", "role", "text")}
+                    for row in archived["messages"] if row["ordinal"] == ordinal]
+        result = {"revision": archived["revision"], "status": "ok" if messages else "没命中", "messages": messages}
+        if "route" in archived:
+            result["route"] = archived["route"]
+        start = ordinal
+    else:
+        result = read_session_excerpt(session_id, start, limit, around)
+    if not exact and around is None and not text_offset and not result["messages"]:
         # Tool-only entries can fill an archive page before dialogue filtering.
         revision = result.get("revision")
         for _ in range(3):
@@ -350,10 +363,15 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
                 break
         if not result["messages"] and result["next_from"] is not None and result["next_from"] > start:
             result["status"] = "本页无可见对话，请继续翻页"
-    if around is None and not text_offset and not result["messages"] and result["next_from"] is None:
+    if not exact and around is None and not text_offset and not result["messages"] and result["next_from"] is None:
         result["status"] = "没有更多可见对话"
     messages = result["messages"]
     result["messages"] = []
+    count = usage.token_counter(DATA) if exact else None
+
+    def fits(value):
+        return count(json_text(value)) <= EXACT_MESSAGE_TOKENS if count else response_size(value) <= QUERY_BYTES
+
     # The source path can be recovered from the archived session metadata.
     if result.get("path"):
         result["path"] = clip_bytes(result["path"], 225)
@@ -369,18 +387,19 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
         if text_offset and row["ordinal"] != start:
             continue
         text = row["text"][text_offset:]
-        prefix = text[:1500]
+        prefix = text[:3000 if exact else 1500]
         entry = {**row, "text": ""}
         result["messages"].append(entry)
-        cursor = result["next_from"]
-        result["next_from"] = row["ordinal"]
+        cursor = result.get("next_from")
+        if not exact:
+            result["next_from"] = row["ordinal"]
         result["next_text_offset"] = text_offset
         low, high = 0, len(prefix)
         while low < high:
             size = (low + high + 1) // 2
             entry["text"] = prefix[:size]
             result["next_text_offset"] = text_offset + size
-            if response_size(result) <= QUERY_BYTES:
+            if fits(result):
                 low = size
             else:
                 high = size - 1
@@ -392,9 +411,12 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
         if low < len(text):
             result["next_text_offset"] = text_offset + low
             break
-        result["next_from"] = cursor
+        if not exact:
+            result["next_from"] = cursor
         result.pop("next_text_offset")
         text_offset = 0
+    if not fits(result):
+        raise ValueError("Session metadata exceeds the query budget")
     return result
 
 
@@ -1657,7 +1679,7 @@ TOOLS = {
     "list_projects": ("List recent projects.",
                       {"offset": OFFSET, "days": {"type": "integer", "minimum": 0, "maximum": 3650},
                        "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "min_records": OFFSET}, []),
-    "find_project": ("Find a project by name or alias.",
+    "find_project": ("Find a project or alias.",
                      {"query": {**STRING, "maxLength": 180}}, ["query"]),
     "get_project": ("Read a project card or section.",
                     {"project": {**STRING, "maxLength": 180},
@@ -1667,16 +1689,17 @@ TOOLS = {
                 "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
     "search": ("Search dialogue.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
-    "get_session": ("Read an archived session excerpt.",
-                    {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "text_offset": OFFSET,
+    "get_session": ("Read exact or nearby messages.",
+                    {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "ordinal": OFFSET,
+                     "text_offset": OFFSET,
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
-    'read_file': ('Read a registered file and check its version.',
+    'read_file': ('Read and verify a registered file.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
                    'session_id': {**STRING, 'maxLength': 350}, 'ordinal': {**OFFSET, 'maximum': 2**63 - 1},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
                    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET,
                    'expected_sha256': {**STRING, 'maxLength': 64}}, ['path']),
-    "log_work": ("Record completed project work.",
+    "log_work": ("Record project work.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
                   "session_id": STRING, "work_id": STRING, "create_project": {"type": "boolean"},
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
@@ -1724,10 +1747,7 @@ def call_tool(db, name, args):
                             model, usage.token_counter(DATA),local_only=args.get('local_only',False),offset=args.get('offset',0),
                             load_packet=lambda pid: packet.load(db, DATA, pid, visible, clean, lazy=True)[0])
     if name == "get_session":
-        result = session_excerpt(**args)
-        if response_size(result) > QUERY_BYTES:
-            raise ValueError("Session metadata exceeds the query budget")
-        return result
+        return session_excerpt(**args)
     if name == "search":
         return find(db, **args)
     if name == 'read_file':
