@@ -828,9 +828,11 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                 CREATE VIRTUAL TABLE message_trigram_fts USING fts5(content,tokenize='trigram',detail='none');
                 INSERT INTO messages VALUES(1,'codex:one',10,'assistant',0,'Atlas-notes.md 修订稿','');
                 INSERT INTO messages VALUES(2,'codex:two',20,'assistant',0,'Atlas plan','');
+                INSERT INTO messages VALUES(3,'codex:three',30,'assistant',0,'ATLAS-NOTES.MD 终稿','');
+                INSERT INTO messages VALUES(4,'codex:four',40,'assistant',0,'atl tla las as- s-n -no not ote tes es. s.m .md','');
                 INSERT INTO message_trigram_fts(rowid,content) SELECT id,dialogue_text FROM messages;""")
             self.assertEqual([(sid,ordinal) for sid,ordinal,_ in brain.recall.text_matches(db,{'atlas-notes.md','修订稿'})],
-                             [('codex:one',10)])
+                             [('codex:one',10),('codex:three',30)])
 
     def test_recall_can_identify_inline_delivery_without_exporting_its_body(self):
         sid = 'codex:fictional-inline'

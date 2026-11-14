@@ -117,10 +117,11 @@ def text_matches(index, terms, sessions=None):
                 FROM message_trigram_fts JOIN messages m ON m.id=message_trigram_fts.rowid
                 WHERE message_trigram_fts MATCH ? AND m.role IN ('user','assistant') AND m.is_system=0'''+scope,
                 (match,*scope_args))
+            encoded_terms = tuple(term.encode('utf-8') for term in terms)
             def exact_hits():
                 for row in hits:
-                    text = row[2].casefold()
-                    if any(term in text for term in terms):
+                    text = row[2].casefold().encode('utf-8')
+                    if any(term in text for term in encoded_terms):
                         yield row
 
             return exact_hits()
@@ -255,11 +256,15 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
                    for i in range(len(run)-1)}
     # Retrieve short Chinese terms inside associated sessions. Keep broad cross-project matching selective.
     short_terms -= {'什么','哪份','哪里','哪个','当时','时候','怎么','哪一','那轮','上一','一轮','要怎','做了','改了'}
+    encoded_terms = tuple(term.encode('utf-8') for term in terms)
+    encoded_short_terms = tuple(term.encode('utf-8') for term in short_terms)
 
     def relevance(text):
         text = extraction.APP_SNAPSHOT.sub('', text).casefold()
         quantity_score = 4 * len(quantities & numbered_details(text)) if quantities else 0
-        return sum(term in text for term in terms)*2 + sum(term in text for term in short_terms) + quantity_score
+        # Complete UTF-8 characters cannot match across character boundaries.
+        encoded = text.encode('utf-8')
+        return sum(term in encoded for term in encoded_terms)*2 + sum(term in encoded for term in encoded_short_terms) + quantity_score
 
     admitted = set(project_sessions)
     found = defaultdict(dict)
@@ -319,7 +324,8 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
         matches = []
         for ordinal, text in turns:
             cleaned = extraction.APP_SNAPSHOT.sub('',text).casefold()
-            hits = sum(term in cleaned for term in terms)
+            encoded = cleaned.encode('utf-8')
+            hits = sum(term in encoded for term in encoded_terms)
             has_constraint = asks_for_constraints and hits and packet.INSTRUCTIONS.search(cleaned)
             if ordinal in found[sid] and (hits >= 2 or has_constraint):
                 matches.append((hits,ordinal))
