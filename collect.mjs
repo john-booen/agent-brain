@@ -290,6 +290,14 @@ async function collect() {
   for (const name of ['AGENTSVIEW_AUTH_TOKEN', 'AGENTSVIEW_AUTH_TOKEN_FILE', 'AGENTSVIEW_PUBLIC_ORIGIN',
     'AGENTSVIEW_MODE', 'AGENTSVIEW_HOST', 'CODEX_SESSIONS_DIR', 'COWORK_DIR', 'KIMI_WORK_DIR',
     'DEEPSEEK_HARNESS_SESSIONS_DIR', 'DSH_HOME']) delete env[name];
+  if (process.env.AGENT_BRAIN_PIN_AGENTS_VIEW === '1') {
+    const version = launch(program, ['--version'], { env, stdio: ['ignore', 'pipe', 'inherit'] });
+    let output = '';
+    for await (const part of version.child.stdout) output += part;
+    if (await version.exit || !output.includes('v0.47.0') || !output.includes('1079cb632051e8c9cbad2dcc945a60643c756d81')) {
+      throw new Error('AgentsView version differs from the verified release');
+    }
+  }
   const catalog = launch(program, ['source', 'list', '--json'], { env, stdio: ['ignore', 'pipe', 'inherit'] });
   let output = '';
   for await (const part of catalog.child.stdout) output += part;
