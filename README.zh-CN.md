@@ -2,7 +2,9 @@
 
 先用虚构项目看一次跨工具交接。需要 Python 3.12 和 Node.js 22 或更新版本。准备好代码后运行 `./install.sh --demo`，安装器备份已有配置，为检测到的客户端生成 MCP 入口。Kimi Work 通过输出的插件文件夹导入，DeepSeek Harness 通过输出的 JSON 导入。
 
-[虚构项目跨端演示](examples/demo.svg)
+![虚构项目跨端演示](examples/demo.svg)
+
+原始聊天和已导出的会话由 AgentsView 索引，项目资料袋把来源、终版交付和用户要求汇在一起，通过本机 MCP 给各端使用。各端可以回写工作记录。后台模型提取可选，只处理配置允许的聊天文字和文件引用。登记文件的正文在本机提取。
 
 回归检查用 `python3 -B -m unittest discover -s tests` 和 `python3 -B evaluation.py --fictional`。已验证的 AgentsView 基线为 v0.47.0、提交 `1079cb632051e8c9cbad2dcc945a60643c756d81`。升级时先在独立目录以相同虚构会话运行采集，再对比会话编号、消息位置、工具读取结果和评测指标，达标后切换运行环境。
 
@@ -28,6 +30,13 @@ Codex 和 Claude Cowork 用本地 MCP。DeepSeek Harness 用 stdio 连接器。K
 资料袋保留用户原始资料、每项任务的当前交付、用户要求和出处。`section` 支持 `inputs`、`deliverables`、`rules`、`todos`、`history` 和 `timeline`。在 `log_work` 中使用 `inputs`、`deliverables`、`rules` 写入这些信息。交付用稳定的 `task` 名称归组，`confirmed` 只在用户明确选定该版本时填写。用 `build-packets --files` 先处理近 60 天且至少两条记录的项目并缓存文件摘要，其他项目首次查询时建立资料袋。支持可选的本机摘要模型，默认使用文件正文提取。运行定时采集时可配置 `AGENT_BRAIN_PACKET_PYTHON` 来刷新资料袋，macOS Homebrew 启动的本机定时采集默认启用。
 
 `read_file` 按登记路径读取文档，也可以填项目名和卡片上唯一的文件名。Word 和 Markdown 用章节标题，PDF 用页码或关键词，Excel 用工作表名。用 `next_offset` 继续读取长段，PDF 提取依赖 `pdftotext`。内容会作为证据交给当前客户端。项目合并使用 `merge-projects`，保留旧名和编号。`merge-candidates` 列出有共享证据的待复核组合，`move-record` 纠正具体的派生工作记录。
+
+## 本机维护
+
+- `python3 brain.py health --verify-archive --backup` 检查 AgentsView 版本、运行状态与数据库，并创建本机快照。
+- `python3 brain.py import-conversations claude-ai /本机路径/导出.zip` 导入本机 Claude 导出文件。重复导入同一份会话不会增加记录。
+- `python3 brain.py index-obsidian /本机路径/笔记库` 只读索引明确选择的 Obsidian 库。
+- `python3 brain.py weekly-report` 生成上一个完整周的私有报告。定时采集配置 `AGENT_BRAIN_WEEKLY=1` 后按北京时间每周一出报告。
 
 ## 虚构演示
 

@@ -2,7 +2,7 @@
 
 Try the fictional handoff first. With Python 3.12 and Node.js 22 or newer, run `./install.sh --demo`. The installer backs up existing configuration and stages MCP entries for the detected clients. Import the generated Kimi Work plugin folder and the DeepSeek Harness connector JSON in their respective clients.
 
-[Fictional cross-client handoff](examples/demo.svg)
+![Fictional cross-client handoff](examples/demo.svg)
 
 Run regressions with `python3 -B -m unittest discover -s tests` and `python3 -B evaluation.py --fictional`. The verified AgentsView baseline is v0.47.0 at commit `1079cb632051e8c9cbad2dcc945a60643c756d81`. Before upgrading, use a separate data directory to ingest the same fictional sessions. Compare message identities, tool outputs, and evaluation results before switching your daily installation.
 
@@ -12,12 +12,26 @@ Agent Brain gives local AI clients the same project progress cards and work log.
 
 ## Quick start
 
-Use Python 3.11+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0). A standalone local OpenAI-compatible model is useful for history backfill. Set `AGENT_BRAIN_DATA` to a directory outside the repository if you prefer a location other than `~/SharedBrain`.
+Use Python 3.12+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https://github.com/kenn-io/agentsview/releases/tag/v0.47.0). Set `AGENT_BRAIN_DATA` to a directory outside the repository if you prefer a location other than `~/SharedBrain`.
 
 1. Copy `examples/config.example.json` to the data directory as `config.json` and set the model URL and ID. Keep model credentials in an environment variable if your endpoint needs them.
 2. Set `AGENTSVIEW_BIN` if the binary is outside your PATH. Stop the AgentsView daemon for this archive, then run `node collect.mjs` to prepare redacted input and update the index. To refresh selected inputs, pass source names, for example `node collect.mjs kimi-work cowork`. Agent Brain starts an authenticated loopback query service when needed.
 3. Run `python3 brain.py backfill` to summarize historical sessions and generate `_index.md`, `card.md` and `log.md` in the data directory. Add `--agent kimi-work --sort messages:asc --limit 8` to try a small batch of short sessions. Repeated runs skip completed unchanged sessions.
 4. Connect each client to the stdio command `python3 /absolute/path/to/agent-brain/brain.py mcp`, with the same `AGENT_BRAIN_DATA`. Add [the skill](skills/agent-brain/SKILL.md) or copy its instructions into the client.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A[Local transcripts and supported exports] --> B[AgentsView transcript index]
+  B --> C[Evidence-backed project packets]
+  D[Client work logs] --> C
+  C --> E[Local MCP server]
+  F[Registered files] --> E
+  E --> G[AI clients]
+```
+
+Clients read compact project packets and request specific source sections when needed. The optional `extract-packets` job uses the configured Magpie Eco route for selected chat messages and file references. Document bodies use local extraction. Only enable this route for chat data you have approved for that provider.
 
 ## Clients
 
@@ -25,6 +39,7 @@ Use Python 3.11+, Node.js 22+, Zstandard and the [AgentsView v0.47.0 CLI](https:
 - Claude Cowork: use a local Cowork plugin or local workspace instructions where the mode can access the command.
 - DeepSeek Harness: import the command as a local stdio connector and add the skill instructions to the working agent.
 - Kimi Work: register a personal plugin with the local stdio server and the skill.
+- Antigravity: the installer stages its local MCP entry. Archive coverage depends on the client and source mode.
 
 Use `get_project` for a named project, `find_project` for an unclear name, and `list_projects` for a cross-project overview. `get_project` builds a short card locally from existing records. Use `section` and `next_offset` for more detail, and `search` or `get_session` for specific evidence. Response pages use a UTF-8 byte limit to keep tool text within the 2,000-token budget for byte-based tokenizers. Model turn usage is measured separately. All clients share the same archive. History coverage depends on the local source, especially for cloud Cowork tasks. [AgentsView source documentation](https://www.agentsview.io/docs/configuration/#session-discovery)
 
@@ -33,6 +48,13 @@ To keep the local index up to date, run `AGENT_BRAIN_SYNC_DAEMON=1 node collect.
 Project packets retain source materials, one current deliverable per task, and evidence-backed user requirements. `get_project` supports `inputs`, `deliverables`, `rules`, `todos`, `history`, and `timeline`. `log_work` accepts `inputs`, `deliverables` with a stable `task` name, and scoped `rules`. Use `confirmed` only for a version the user explicitly selected. `build-packets --files` prebuilds active packets and caches short extracts by file fingerprint. Other projects build on first access. Set `AGENT_BRAIN_PACKET_PYTHON` to refresh packets after collection. The local Homebrew macOS scheduler path does this by default.
 
 Use `read_file` with a registered absolute path or the project and a unique filename shown on its card. Select a Word or Markdown heading, a PDF page or keyword, or an Excel sheet. Resume with `next_offset` on longer sections. PDF extraction uses `pdftotext`. Returned text is evidence for the current client. Use `merge-candidates` to review possible duplicates, `merge-projects` to retain old names and IDs as aliases, and `move-record` to correct a specific derived work record.
+
+## Local operations
+
+- Check the archive version and create a local SQLite backup with `python3 brain.py health --verify-archive --backup`.
+- Import a local Claude export with `python3 brain.py import-conversations claude-ai /path/to/export.zip`. Reimporting the same export leaves a single copy of each conversation.
+- Index an explicitly chosen Obsidian vault with `python3 brain.py index-obsidian /path/to/vault`.
+- Generate the last complete week's private reports with `python3 brain.py weekly-report`. Set `AGENT_BRAIN_WEEKLY=1` in your periodic collector to generate them on Monday in Asia/Shanghai.
 
 ## Fictional demo
 
