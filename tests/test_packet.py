@@ -187,6 +187,16 @@ class PacketTest(unittest.TestCase):
         self.assertIn('antigravity', self.tool('get_project', project='Atlas')['card'])
         self.assertNotIn('antigravity', brain.SOURCES)
 
+    def test_bound_client_normalizes_and_records_source_mismatches(self):
+        with patch.dict(os.environ, {'AGENT_BRAIN_SOURCE': 'cowork'}):
+            args = dict(project='Atlas', summary='Fictional handoff.', work_id='handoff')
+            self.assertTrue(self.tool('log_work', source='codex', **args)['written'])
+            self.assertFalse(self.tool('log_work', **args)['written'])
+        self.assertEqual(self.db.execute('SELECT source FROM work').fetchone()[0], 'cowork')
+        event = json.loads((self.data / 'health.log').read_text())
+        self.assertEqual((event['event'], event['source'], event['requested_source']),
+                         ('log_source_mismatch', 'cowork', 'codex'))
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

@@ -773,7 +773,16 @@ def packet_log_item(value, kind):
     return item
 
 
-def log_work(db, project, summary, source, session_id=None, work_id=None, **details):
+def log_work(db, project, summary, source=None, session_id=None, work_id=None, **details):
+    configured = os.environ.get("AGENT_BRAIN_SOURCE")
+    if configured and configured not in LOG_SOURCES:
+        raise ValueError("Invalid AGENT_BRAIN_SOURCE")
+    if configured and source is not None and source != configured:
+        fd = os.open(DATA / "health.log", os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "a") as log:
+            print(json_text({"event": "log_source_mismatch", "at": now(), "source": configured,
+                             "requested_source": source if source in LOG_SOURCES else "unknown"}), file=log)
+    source = configured or source
     if source not in LOG_SOURCES:
         raise ValueError("Unknown source")
     summary = clean(summary.strip())
@@ -1329,7 +1338,7 @@ TOOLS = {
                   "session_id": STRING, "work_id": STRING,
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
                   **{key: {'type': 'array', 'items': schema} for key, schema in PACKET_ITEM_SCHEMAS.items()}},
-                 ["project", "summary", "source"]),
+                 ["project", "summary"]),
 }
 
 
