@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 6
+REVISION = 7
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -138,7 +138,7 @@ def checked_result(response, evidence, valid_ids, clean):
                 ordinal = fact['ordinal']
                 source = evidence.get(ordinal, {})
                 path, quote = fact.get('path'), fact.get('quote')
-                checked = {'ordinal': ordinal}
+                checked = {'ordinal': ordinal, 'time': source.get('time')}
                 role = {'inputs': 'user', 'rules': 'user', 'deliverables': 'assistant'}.get(key)
                 if role and source.get('role') != role:
                     rejected += 1
@@ -163,6 +163,7 @@ def checked_result(response, evidence, valid_ids, clean):
                             and (confirmation - ordinal <= 10 or
                                  (checked.get('path') and Path(checked['path']).name in evidence[confirmation].get('text', '')))):
                         checked['confirmation'] = confirmation
+                        checked['confirmation_time'] = evidence[confirmation].get('time')
                     elif confirmation is not None:
                         rejected += 1
                 elif key == 'rules':
@@ -248,6 +249,7 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
                 internal_review = metadata.get('relationship_type') == 'subagent' and str(metadata.get('first_message') or '').startswith(
                     'The following is the Codex agent history')
                 evidence = transcript(index, sid, visible, paths_in, encode) if revision_row and not internal_review else []
+                timestamps = dict(index.execute('SELECT ordinal,timestamp FROM messages WHERE session_id=?', (sid,))) if evidence else {}
             if not evidence:
                 stats['missing'] += 1
                 continue
@@ -271,10 +273,10 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
             usage = {}
             try:
                 response = call_model([{'role':'system','content':PROMPT},{'role':'user','content':payload}], usage.update)
-                result = checked_result(response, mapped, {item['id'] for item in allowed}, clean)
+                result = checked_result(response, {n: {**row, 'time': timestamps.get(n)} for n, row in mapped.items()},
+                                        {item['id'] for item in allowed}, clean)
                 for item in result['projects']:
-                    item['time'] = index.execute('SELECT timestamp FROM messages WHERE session_id=? AND ordinal=?',
-                                                 (sid, item['ordinal'])).fetchone()[0]
+                    item['time'] = timestamps.get(item['ordinal'])
                 result['archive_revision'] = archive_revision
                 with db:
                     db.execute("""INSERT INTO packet_extractions VALUES(?,?,?,?) ON CONFLICT(session_id)

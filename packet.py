@@ -11,7 +11,7 @@ import file_text
 import notes
 
 
-VERSION = 23
+VERSION = 24
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -380,19 +380,20 @@ def add_extracted(project, row, versions, inputs, deliveries, rules, todos, outc
     message_time = project.get('time')
     outcomes.append({'text': project['summary'], 'ref': citation(row, project['ordinal'], message_time), 'modeled': True})
     for item in project['inputs']:
-        ref = citation(row, item['ordinal'])
-        inputs.append(entry(available_path(item.get('path'), cwd), ref, text=item.get('text'), modeled=True))
+        ref = citation(row, item['ordinal'], item.get('time'))
+        path = available_path(item.get('path'), cwd) or item.get('path')
+        inputs.append(entry(path, ref, text=item.get('text'), modeled=True))
     for item in project['deliverables']:
-        ref = citation(row, item['ordinal'])
-        path = available_path(item.get('path'), cwd)
+        ref = citation(row, item['ordinal'], item.get('time'))
+        path = available_path(item.get('path'), cwd) or item.get('path')
         confirmation = item.get('confirmation')
         deliveries.append(entry(path, ref, task=item['task'], text=item.get('text'), explicit_task=True,
                                 final=item['final'], pinned=confirmation is not None, modeled=True,
                                 description=item.get('description'),
-                                approval=citation(row, confirmation) if confirmation is not None else None,
+                                approval=citation(row, confirmation, item.get('confirmation_time')) if confirmation is not None else None,
                                 status='用户确认' if confirmation is not None else '已交付' if item['final'] else '草稿'))
-    rules.extend({**item, 'ref': citation(row, item['ordinal']), 'modeled': True} for item in project['rules'])
-    todos.extend({**item, 'ref': citation(row, item['ordinal']), 'modeled': True} for item in project['todos'])
+    rules.extend({**item, 'ref': citation(row, item['ordinal'], item.get('time')), 'modeled': True} for item in project['rules'])
+    todos.extend({**item, 'ref': citation(row, item['ordinal'], item.get('time')), 'modeled': True} for item in project['todos'])
 
 
 def build(rows, versions, index, visible, clean, names, project_terms_by_session, extracted=None, project_id=None, extra_rows=None):
