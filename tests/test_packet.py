@@ -600,6 +600,23 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual({row['ordinal'] for row in evidence.values()},{0,28})
         self.assertIn('/tmp/orders.xlsx', next(row['files'] for row in evidence.values() if row['role']=='assistant'))
 
+    def test_recall_keeps_early_user_requirements_in_a_long_session(self):
+        sid = 'codex:fictional-long-task'
+        self.archive_messages(sid,'Atlas',[
+            ('user','The rehearsal uses a silent speaker. Keep the network off.'),
+            *(turn for n in range(150) for turn in [('user',f'Continue the setup, step {n}.'),
+                                                     ('assistant','The silent speaker rehearsal is progressing.')]),
+        ])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.row_factory=sqlite3.Row
+            project=self.tool('log_work',project='Atlas',create_project=True,source='codex',
+                              summary='Prepared the rehearsal.',session_id=sid)['project_id']
+            _,evidence,_=brain.recall.evidence_package(self.db,index,project,'Atlas silent speaker rehearsal',
+                                                       brain.visible,brain.packet.paths_in,brain.json_text,use_tags=False)
+        self.assertIn(0,[row['ordinal'] for row in list(evidence.values())[:5]])
+
     def test_recall_file_history_does_not_displace_the_best_message(self):
         sid='codex:fictional-repeated-file'
         version=self.root/'status.md'

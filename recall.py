@@ -256,6 +256,23 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
         for ordinal, (text, logged) in seeds[sid].items():
             score = relevance(text)
             found[sid][ordinal] = max(found[sid].get(ordinal,0),2+score*2+(10 if logged else 0))
+    user_anchors = set()
+    # Preserve an early user instruction when later commentary repeats the same topics.
+    for sid in sorted(project_sessions & metadata.keys(),key=lambda key:(max(found.get(key,{}).values(),default=0),key),reverse=True)[:12]:
+        turns = index.execute("""SELECT ordinal,coalesce(dialogue_text,content,'') FROM messages
+            WHERE session_id=? AND role='user' AND is_system=0 ORDER BY ordinal""",(sid,)).fetchall()
+        if len(turns)<25:
+            continue
+        matches = []
+        for ordinal, text in turns:
+            cleaned = extraction.APP_SNAPSHOT.sub('',text).casefold()
+            hits = sum(term in cleaned for term in terms)
+            if hits>=2 and ordinal in found[sid]:
+                matches.append((hits,ordinal))
+        segments = {}
+        for _, ordinal in sorted(matches,key=lambda item:(-item[0],item[1])):
+            segments.setdefault(ordinal//SEGMENT_SIZE,ordinal)
+        user_anchors.update((sid,ordinal) for ordinal in list(segments.values())[:3])
     tags = local_tags(db, [(sid,v[0]) for sid,v in metadata.items()],question) if use_tags else []
     for score, _, sid, _, tag in tags:
         for ordinal in tag['anchors']:
@@ -287,7 +304,8 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
     for item in ranked:
         if item[2] not in direct:
             direct[item[2]]=item
-    selected = list(dict.fromkeys([*list(direct.values())[:24],*ranked]))[:140]
+    priority_hits = [item for item in ranked if (item[2],item[3]) in user_anchors]
+    selected = list(dict.fromkeys([*list(direct.values())[:24],*priority_hits,*ranked]))[:140]
     evidence = {}
     ordering = {}
     tails = {sid: index.execute('''SELECT max(ordinal) FROM messages WHERE session_id=?
@@ -310,6 +328,7 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
             evidence.setdefault(key,row)
             bonus = int(row['role']=='assistant' and bool(row.get('files') or extraction.HANDOFF.search(row['text'])))
             bonus += 4 if row.get('inline_sections') and follows_user else 0
+            bonus += 20 if key in user_anchors else 0
             grade=(own_score+score//3+bonus,own_score,total,-priority,row['ordinal'])
             ordering[key]=max(ordering.get(key,grade),grade)
     return evidence,ordering,metadata,tags
