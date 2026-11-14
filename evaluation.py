@@ -16,6 +16,17 @@ def anchor(item):
     return (item['session'], item['ordinal'], Path(path).name if path else None)
 
 
+def matching_sets(case, predicted, key):
+    windows = set(case.get('sessions', ()))
+    expected = {anchor(item) for item in case[key]}
+    actual = {anchor(item) for item in predicted.get(key, ()) if not windows or item['session'] in windows}
+    if key == 'attribution':
+        # A session can belong to several projects; the ordinal is preserved in the gold data.
+        expected = {(sid, None, None) for sid, _, _ in expected}
+        actual = {(sid, None, None) for sid, _, _ in actual}
+    return expected, actual
+
+
 def prediction(db, case):
     project = case['id']
     data, _ = brain.packet.load(db, brain.DATA, project, brain.visible, brain.clean, lazy=True)
@@ -46,14 +57,8 @@ def score(cases, predict, measure):
             continue
         predicted = predict(case)
         row = {'id': case['id'], 'status': case['status'], **measure(case), 'counts': {}}
-        windows = set(case.get('sessions', ()))
         for key in FIELDS:
-            expected = {anchor(item) for item in case[key]}
-            actual = {anchor(item) for item in predicted.get(key, ()) if not windows or item['session'] in windows}
-            if key == 'attribution':
-                # Attribution is a session-level decision. The ordinal is retained for manual review.
-                expected = {item[0] for item in expected}
-                actual = {item[0] for item in actual}
+            expected, actual = matching_sets(case, predicted, key)
             counts = [len(expected & actual), len(actual - expected), len(expected - actual), int(expected == actual)]
             row['counts'][key] = counts
             totals[key] = [a + b for a, b in zip(totals[key], counts)]
@@ -76,13 +81,8 @@ def evidence_differences(cases, predict):
         if case.get('status') not in {'codex_reviewed', 'user_verified', 'fictional'}:
             continue
         predicted = predict(case)
-        sessions = set(case.get('sessions', ()))
         for key in FIELDS:
-            actual = {anchor(item) for item in predicted.get(key, ()) if not sessions or item['session'] in sessions}
-            expected = {anchor(item) for item in case[key]}
-            if key == 'attribution':
-                actual = {(sid, None, None) for sid, _, _ in actual}
-                expected = {(sid, None, None) for sid, _, _ in expected}
+            expected, actual = matching_sets(case, predicted, key)
             if expected != actual:
                 yield {'project_id': case['id'], 'field': key,
                        'missing': sorted(expected - actual, key=repr),
