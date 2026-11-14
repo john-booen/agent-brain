@@ -26,6 +26,7 @@
 !/examples/eval.fictional.json
 !/scripts/
 !/scripts/demo.py
+!/scripts/privacy_audit.py
 !/tests/
 !/tests/test_brain.py
 !/tests/test_packet.py
