@@ -295,6 +295,17 @@ class PacketTest(unittest.TestCase):
         self.assertIn('模型提取', self.tool('get_project', project='Atlas')['coverage'])
         self.assertIn('模型提取', self.tool('list_projects')['coverage'])
 
+    def test_busy_database_reports_error_and_accepts_retry_after_unlock(self):
+        args = dict(project='Atlas', create_project=True, source='codex', summary='Fictional handoff.', work_id='lock')
+        with sqlite3.connect(self.data / 'brain.sqlite') as writer:
+            writer.execute('BEGIN IMMEDIATE')
+            self.db.execute('PRAGMA busy_timeout=10')
+            with self.assertRaisesRegex(sqlite3.OperationalError, 'locked'):
+                self.tool('log_work', **args)
+            writer.rollback()
+        self.assertTrue(self.tool('log_work', **args)['written'])
+        self.assertFalse(self.tool('log_work', **args)['written'])
+
     def test_obsidian_scan_is_read_only_and_registers_exact_project_folder(self):
         vault = self.root / 'vault'
         (vault / '.obsidian').mkdir(parents=True)
