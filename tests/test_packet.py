@@ -660,6 +660,13 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         audit = json.loads((self.data/'recall_evidence.jsonl').read_text().splitlines()[0])
         self.assertEqual(set(audit), {'at','sha256','bytes','messages'})
         self.assertIn([sid,2], audit['messages'])
+        validation_path = self.data/'recall_validation.jsonl'
+        validation, = map(json.loads, validation_path.read_text().splitlines())
+        self.assertEqual({key: validation[key] for key in ('sha256','checked','accepted','whitespace_matches','rejected')},
+                         {'sha256':audit['sha256'], 'checked':3, 'accepted':2, 'whitespace_matches':0,
+                          'rejected':{'reference':1}})
+        self.assertNotIn('daily schedule', validation_path.read_text())
+        self.assertEqual(validation_path.stat().st_mode & 0o777, 0o600)
         self.db.execute("INSERT INTO recall_segments VALUES(?,0,2,'revision','now',?)", (sid,
             json.dumps({'summary':'Atlas schedule handoff','tags':['Atlas'],'anchors':[2]})))
         self.db.commit()
@@ -667,6 +674,22 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
         self.assertEqual((answer['level'],answer['route']), (3,'local'))
         self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
+
+    def test_recall_allows_whitespace_differences_and_checks_original_quote(self):
+        evidence = {'1:1': {'role':'user','session_id':'codex:test','ordinal':1,
+                            'text':'采用会议口径\n\t4,000 万。'}}
+        claim = {'ref':'1:1','kind':'rule','text':'采用会议口径。'}
+        diagnostics = {}
+        checked = brain.recall.checked_claims({'claims':[
+            {**claim,'quote':'采用会议口径 4,000 万。'},
+            {**claim,'quote':'采用会议口径 5,000 万。'},
+            {**claim,'quote':'采用会议口径 4,000 万!'},
+            {**claim,'quote':'采用会议口径 4,000 万。','kind':'deliverable'},
+        ]},evidence,diagnostics)
+        self.assertEqual([row['quote'] for row in checked], ['采用会议口径\n\t4,000 万。'])
+        self.assertEqual(diagnostics,{'checked':4,'accepted':1,'whitespace_matches':1,
+                                     'rejected':{'quote':2,'role':1}})
+        self.assertFalse(brain.recall.checked_claims({'claims':[{**claim,'quote':'采用 会议口径'}]},evidence))
 
     def test_recall_confirmation_needs_user_approval_and_the_same_delivery(self):
         sid = 'codex:fictional-approval'

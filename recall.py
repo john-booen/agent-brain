@@ -498,7 +498,10 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
 def record_evidence(directory,digest,evidence,size):
     row = {'at':datetime.now(timezone.utc).isoformat(),'sha256':digest,'bytes':size,
            'messages':[[row['session_id'],row['ordinal']] for row in evidence.values()]}
-    path = directory/'recall_evidence.jsonl'
+    append_local_record(directory/'recall_evidence.jsonl', row)
+
+
+def append_local_record(path, row):
     fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
     with os.fdopen(fd,'a') as stream:
         stream.write(json.dumps(row,ensure_ascii=False,separators=(',',':'))+'\n')
@@ -737,35 +740,64 @@ def confirmation_source(item, source, evidence):
     return delivery if not attachments and delivery.get('inline_sections') and near else None
 
 
-def checked_claims(raw, evidence):
+def source_quote(text, quote):
+    if quote in text:
+        return quote
+    # Match presentation whitespace only, then return the exact underlying excerpt.
+    pattern = r'\s+'.join(re.escape(part) for part in quote.split())
+    match = re.search(pattern, text)
+    return match[0] if match else None
+
+
+def checked_claims(raw, evidence, diagnostics=None):
+    rejected = defaultdict(int)
+    if diagnostics is None:
+        diagnostics = {}
+    diagnostics.update(checked=0, accepted=0, whitespace_matches=0, rejected=rejected)
     if not isinstance(raw, dict) or not isinstance(raw.get('claims'), list):
+        rejected['bad_response'] += 1
         return []
     output = []
     for item in raw['claims'][:4]:
+        diagnostics['checked'] += 1
         if not isinstance(item, dict):
+            rejected['bad_claim'] += 1
             continue
         ref, quote, text, kind = (item.get(key) for key in ('ref', 'quote', 'text', 'kind'))
         if not all(isinstance(a, str) and a.strip() for a in (ref, quote, text, kind)):
+            rejected['bad_claim'] += 1
             continue
         source = evidence.get(ref)
-        if not source or len(quote.strip()) < (2 if kind=='confirmed' else 4) or quote not in source['text']:
+        if not source:
+            rejected['reference'] += 1
             continue
         if kind not in {'answer', 'deliverable', 'rule', 'confirmed'}:
+            rejected['kind'] += 1
             continue
         if (kind == 'deliverable' and source['role'] != 'assistant'
                 or kind in {'rule', 'confirmed'} and source['role'] != 'user'):
+            rejected['role'] += 1
+            continue
+        minimum = 2 if kind=='confirmed' else 4
+        trimmed = quote.strip()
+        matched = source_quote(source['text'], trimmed) if minimum <= len(trimmed) and len(quote) <= 1400 else None
+        if matched is None:
+            rejected['quote'] += 1
             continue
         path = item.get('path')
         if path is not None and not isinstance(path,str):
+            rejected['path'] += 1
             continue
         if kind == 'confirmed':
             approval = confirmation_source(item, source, evidence)
             if not approval:
+                rejected['confirmation'] += 1
                 continue
         elif path is not None and path not in source.get('files', []):
+            rejected['path'] += 1
             continue
         entry = {'text': text[:155], 'kind': kind, 'session_id': source['session_id'], 'ordinal': source['ordinal'],
-                 'quote': extraction.text_excerpt(quote, 86)}
+                 'quote': extraction.text_excerpt(matched, 86)}
         if path:
             entry['file'] = Path(path).name[:145]
         elif kind=='deliverable' and source.get('inline_sections') and not source.get('files'):
@@ -773,6 +805,8 @@ def checked_claims(raw, evidence):
         if kind == 'confirmed':
             entry['delivery_ordinal'] = approval['ordinal']
         output.append(entry)
+        diagnostics['accepted'] += 1
+        diagnostics['whitespace_matches'] += matched != trimmed
     return output
 
 
@@ -889,7 +923,7 @@ def write_index(db, directory, pid, name):
 
 
 def query(db, directory, settings, project, question, resolve, get_project, visible, paths_in, encode, model, count,
-          prefer_logs=False, use_tags=True, local_only=False, offset=0, load_packet=None):
+          prefer_logs=False, use_tags=True, local_only=False, offset=0, load_packet=None, validation=None):
     question = question.strip()
     if not question:
         return {'level': 4, 'status': '请提供具体的历史问题'}
@@ -949,7 +983,13 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             response = eco.call(db, settings, [{'role': 'system', 'content': PROMPT},
                 {'role': 'user', 'content': packed}],
                 'recall', model, encode, recall=True)
-            facts = checked_claims(response, evidence)
+            diagnostics = validation if validation is not None else {}
+            facts = checked_claims(response, evidence, diagnostics)
+            try:
+                append_local_record(directory/'recall_validation.jsonl', {
+                    'at':datetime.now(timezone.utc).isoformat(), 'sha256':digest, **diagnostics})
+            except OSError:
+                pass
             if facts:
                 uncertain = response.get('uncertain')
                 result = {'level': 1, 'route': 'Eco', 'evidence': facts}
