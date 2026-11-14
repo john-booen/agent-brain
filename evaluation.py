@@ -3,7 +3,6 @@ import argparse
 from collections import defaultdict
 import json
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 
 import brain
@@ -65,6 +64,7 @@ def score(cases, predict, measure):
         tp, fp, fn, exact = totals[key]
         report['metrics'][key] = {'precision': tp / (tp + fp) if tp + fp else None,
                                   'recall': tp / (tp + fn) if tp + fn else None,
+                                  'f1': 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None,
                                   'exact_project_accuracy': exact / len(rows) if rows else None,
                                   'tp': tp, 'fp': fp, 'fn': fn}
     return report
@@ -124,10 +124,10 @@ def main():
         lines = ['# Project packet evaluation', '',
                  f"Scored {report['scored_projects']} of {report['sample_projects']} projects. "
                  f"User-verified projects: {report['user_verified_projects']}.", '',
-                 '| Field | Precision | Recall | Exact project accuracy |',
-                 '|---|---:|---:|---:|']
+                 '| Field | Precision | Recall | F1 | Exact project accuracy |',
+                 '|---|---:|---:|---:|---:|']
         for key, measured in report['metrics'].items():
-            values = [measured[name] for name in ('precision', 'recall', 'exact_project_accuracy')]
+            values = [measured[name] for name in ('precision', 'recall', 'f1', 'exact_project_accuracy')]
             display = ['—' if value is None else f'{value:.1%}' for value in values]
             lines.append('| ' + ' | '.join([key, *display]) + ' |')
         lines.extend(['', '| Project ID | Status | Tokens | UTF-8 bytes |', '|---|---|---:|---:|'])
