@@ -28,7 +28,7 @@ After completing substantive work, call `log_work` with the project ID or exact 
 When the user explicitly selects a final version or confirms a send, record it immediately with the exact source message. Record a new revision request as work to do.
 
 - `inputs`: objects with `path` or `text`, and optional `ordinal`.
-- `deliverables`: objects with `path` and `task`. Optional fields are `ordinal`, `final`, `confirmed` and `status` (草稿, 已交付, 已失效).
+- `deliverables`: records with a stable `task`. Use `path` for a file, or use `text` (8–240 characters quoted from the assistant's reply), `ordinal`, and the call's `session_id` for a chat-only output. Read the full chat output with `get_session`. Optional fields include `final` and `status` (草稿, 已交付, 已失效). `confirmed` applies to file deliveries with user confirmation evidence.
 - `rules`: objects with `text`, optionally `topic`, `ordinal`, `task` and `scope` (项目, 本任务, 对外版本).
 - `conclusions`, `todos` and `blockers`: objects with `text` and optional `topic` and `ordinal`. Existing integrations may use `files` objects with `path` and `status`.
 - `get_session`: use `around` with a source ordinal or continue with `start` and `text_offset`. In section and file results, use `next_offset` to continue.

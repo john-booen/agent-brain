@@ -467,6 +467,37 @@ fs.stat = async (file, ...args) => {
             index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
         self.assertIn('最后交付待确认', delivery())
 
+    def test_log_work_records_an_in_chat_delivery_with_its_assistant_excerpt(self):
+        sid = 'kimi-work:fictional-chat-delivery'
+        original = 'The checklist distinguishes scheduled and completed reviews.'
+        later = 'The revised checklist distinguishes pending and completed reviews.'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', 'Please draft the Atlas checklist.'),
+            ('assistant', original),
+            ('user', 'Keep it short and clear.'),
+            ('assistant', later),
+        ])
+        def record(work_id, ordinal, text):
+            return self.tool('log_work', project='Atlas', create_project=True, source='kimi-work',
+                             summary='Record the checklist', work_id=work_id, session_id=sid,
+                             deliverables=[{'text':text, 'task':'Checklist', 'ordinal':ordinal, 'final':True}])
+        self.assertTrue(record('first', 1, original)['written'])
+        self.assertFalse(record('first', 1, original)['written'])
+        correct = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(original, correct)
+        self.assertIn(sid + '#1', correct)
+        self.assertIn('终版候选', correct)
+        record('wrong-role', 2, 'Keep it short and clear.')
+        record('invented', 3, 'This excerpt did not appear.')
+        history = self.tool('get_project', project='Atlas', section='history')['card']
+        self.assertIn('原文待核', history)
+        self.assertEqual(correct, self.tool('get_project', project='Atlas', section='deliverables')['card'])
+        record('revision', 3, later)
+        revised = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(later, revised)
+        self.assertIn(sid + '#3', revised)
+        self.assertNotIn(original, revised)
+
     def test_work_log_citations_use_source_and_mark_unverified_items(self):
         sid = 'cowork:fictional-source-date'
         report = self.root / 'export' / 'report.md'

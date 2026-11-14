@@ -309,7 +309,11 @@ def recorded_reference(index, row, item, kind, visible):
     if message:
         text = visible(dict(message))
         matches = bool(text and text != '[Skill]' and not NON_USER.match(text))
-        if kind in {'files', 'deliverables'}:
+        if kind == 'deliverables' and not item.get('path'):
+            quote = ' '.join(item.get('text', '').split())
+            matches = bool(matches and message['role'] == 'assistant' and not text.startswith('<codex_internal_context')
+                           and quote and quote in ' '.join(text.split()))
+        elif kind in {'files', 'deliverables'}:
             path = Path(item['path'])
             links = re.findall(r'`([^`\n]+)`|\]\(<?([^\n<>]*?)>?\)(?=\s|$|[。；，、·])', text)
             mentioned = [Path(p) for p in paths_in(text)]
@@ -377,11 +381,21 @@ def finish_entries(inputs, deliveries, rules, approvals):
         input_paths.setdefault(key, item)
     grouped = defaultdict(dict)
     by_stem = defaultdict(list)
+    inline = {}
     for item in deliveries:
         if item.get('path'):
             by_stem[task_key(item['path'])].append(item)
+        else:
+            ref = item['ref']
+            source = ref['session_id'], ref['ordinal']
+            if source[1] is not None and item.get('recorded') and (
+                    source not in inline or version_order(item) >= version_order(inline[source])):
+                inline[source] = item
     for item in deliveries:
         path = item.get('path')
+        ref = item['ref']
+        if not path and inline.get((ref['session_id'], ref['ordinal']), item) is not item:
+            continue
         if not item.get('task'):
             item['task'] = Path(path).stem
         key = task_key(item['task']) or task_key(path or '')
@@ -503,6 +517,13 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
         file_entries = [(kind, item) for kind in ('files', 'deliverables') for item in data.get(kind, [])]
         for kind, item in file_entries:
             ref = recorded_reference(index, row, item, kind, visible)
+            if not item.get('path'):
+                if kind == 'deliverables' and item.get('text'):
+                    deliveries.append(entry(None, ref, task=item['task'], text=item['text'],
+                                            explicit_task=True, final=item.get('final', False) and not ref.get('pending'),
+                                            status='草稿' if ref.get('pending') and item['status']!='已失效' else item['status'],
+                                            recorded=True, recorded_order=recorded_order))
+                continue
             path = available_path(item['path'], cwd) or item['path']
             pinned = item['status'] == '用户确认' and (
                 row['kind'] == 'summary' or item.get('confirmed') is True
@@ -665,7 +686,8 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
             cached = json.loads(previous['data'])
             evidence = (item for key in ('inputs', 'deliverables', 'rules', 'history') for item in cached[key])
             # A confirmation depends on the indexed conversation, even without a new work log.
-            if not any(item.get('pinned') or item.get('ref', {}).get('pending') for item in evidence):
+            if not any(item.get('pinned') or item.get('ref', {}).get('pending')
+                       or (item.get('recorded') and item.get('status') and not item.get('path')) for item in evidence):
                 return cached, False
     path = data_dir / 'agentsview' / 'sessions.db'
     index = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5) if path.is_file() else None

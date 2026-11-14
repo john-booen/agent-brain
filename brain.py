@@ -925,7 +925,7 @@ def valid_item(value, kind, evidence):
     return item
 
 
-def packet_log_item(value, kind):
+def packet_log_item(value, kind, session_id=None):
     if not isinstance(value, dict):
         raise ValueError('Expected a packet item object')
     if kind == 'inputs':
@@ -939,7 +939,18 @@ def packet_log_item(value, kind):
             status = '已交付'
         elif value.get('confirmed') is True and status != '已失效':
             status = '用户确认'
-        item = valid_item({**value, 'status': status}, 'files', None)
+        if 'text' in value:
+            if 'path' in value or value.get('confirmed') is True or not session_id:
+                raise ValueError('聊天交付需提供会话 ID 和原文，不能同时登记文件路径或用户确认')
+            ordinal = value.get('ordinal')
+            snippet = value['text']
+            if type(ordinal) is not int or ordinal < 0 or not isinstance(snippet, str) or not 8 <= len(snippet.strip()) <= 240:
+                raise ValueError('聊天交付需提供消息号和 8 至 240 字的原话')
+            if status not in STATES:
+                raise ValueError('Invalid delivery status')
+            item = {'text':clean(snippet.strip()), 'status':status}
+        else:
+            item = valid_item({**value, 'status': status}, 'files', None)
         task = value.get('task')
         if not isinstance(task, str) or not task.strip():
             raise ValueError('A deliverable needs a task name')
@@ -987,7 +998,7 @@ def log_work(db, project, summary, source=None, session_id=None, work_id=None, c
             items = details[kind]
             if not isinstance(items, list) or len(items) > 30:
                 raise ValueError('Expected up to 30 packet items')
-            payload[kind] = [packet_log_item(item, kind) for item in items]
+            payload[kind] = [packet_log_item(item, kind, session_id) for item in items]
     session_id = clean(session_id) if session_id else None
     identity_payload = {**payload, 'files': [valid_item(item, 'files', None) for item in details.get('files') or []]}
     if 'rules' in payload:
@@ -1629,9 +1640,9 @@ GROUP_SCHEMA = object_schema({"groups": {"type": "array", "items": object_schema
     {"name": STRING, "indices": {"type": "array", "items": {"type": "integer"}}}, ["name", "indices"])}}, ["groups"])
 PACKET_ITEM_SCHEMAS = {
     'inputs': object_schema({'path': STRING, 'text': STRING, 'ordinal': OFFSET}, []),
-    'deliverables': object_schema({'path': STRING, 'task': STRING, 'ordinal': OFFSET,
+    'deliverables': object_schema({'path': STRING, 'text': STRING, 'task': STRING, 'ordinal': OFFSET,
                                    'status': {'type': 'string', 'enum': list(STATES)},
-                                   'final': {'type': 'boolean'}, 'confirmed': {'type': 'boolean'}}, ['path', 'task']),
+                                   'final': {'type': 'boolean'}, 'confirmed': {'type': 'boolean'}}, ['task']),
     'rules': object_schema({**ITEM['properties'], 'task': STRING,
                             'scope': {'type': 'string', 'enum': ['项目', '本任务', '对外版本']}}, ['text']),
 }
