@@ -588,16 +588,22 @@ def project_overview(project, sections, extraction_method='规则推断', covera
     result.update(coverage or {})
     result['evidence'] = extraction_method
     result["sections"] = [key for key, items in sections.items() if items]
-    status = sections["timeline"][0][2:] if sections["timeline"] else "待补记录"
+    recent_status = (sections[key][0][2:] for key in ("timeline", "conclusions") if sections[key])
     groups = (("deliverables", 5), ("inputs", 5), ("rules", 8), ("todos", 4), ("blockers", 1), ("conclusions", 1))
-    sentences = re.split(r'(?<=[。！？])\s*|\n+', card_entry(status))
     result["card"] = "现状"
-    for sentence in sentences[:2]:
-        value = result["card"] + " " + sentence.strip()
-        if len(value.encode("utf-8")) <= 320:
-            result["card"] = value
+    for status in recent_status:
+        claim, _, source = card_entry(status).rpartition(" — ")
+        sentences = re.split(r'(?<=[。！？；])\s*|\n+', claim or status)
+        for count in range(min(len(sentences), 2), 0, -1):
+            summary = " ".join(value.strip() for value in sentences[:count] if value.strip())
+            value = "现状 " + summary + (f" — {source}" if source else "")
+            if summary and len(value.encode("utf-8")) <= 320:
+                result["card"] = value
+                break
+        if result["card"] != "现状":
+            break
     if result["card"] == "现状":
-        result["card"] += " 见时间线"
+        result["card"] += " 见时间线" if sections["timeline"] else " 待补记录"
     result["next"] = "按需展开分区"
     for index in range(max(count for _, count in groups)):
         for key, count in groups:
@@ -694,6 +700,8 @@ def packet_item(db, item, kind, compact=False):
                 title = f"{item['task']} · {title}"
             if approval := item.get('approval'):
                 detail += f"（确认依据 {approval['session_id']}#{approval['ordinal']}）"
+    elif compact and kind == 'deliverables' and item.get('task') and len(item.get('text', '').encode('utf-8')) > 260:
+        title, detail = item['task'], '，正文见交付分区'
     else:
         title, detail = item.get('text') or '待核', ''
         if kind == 'deliverables' and item.get('task'):

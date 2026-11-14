@@ -70,6 +70,21 @@ class BrainTest(unittest.TestCase):
         self.assertLessEqual(brain.response_size(page), brain.QUERY_BYTES)
         self.assertLessEqual(brain.response_size(second), brain.QUERY_BYTES)
 
+    def test_short_card_keeps_a_complete_status_sentence_and_its_source(self):
+        work = brain.log_work(
+            self.db, "Fictional Atlas", "首轮已交付；" + "较长的说明" * 80 + "。",
+            "codex", create_project=True,
+        )
+        card = brain.get_project(self.db, work["project_id"])["card"]
+        self.assertRegex(card.splitlines()[0], r"^现状 首轮已交付； — codex \d{4}-\d{2}-\d{2}$")
+
+        work = brain.log_work(
+            self.db, "Fictional Beacon", "较长的说明" * 80,
+            "codex", conclusions=[{"text": "接续入口已核验。"}], create_project=True,
+        )
+        card = brain.get_project(self.db, work["project_id"])["card"]
+        self.assertIn("接续入口已核验。 — codex", card.splitlines()[0])
+
     def test_transcript_excerpts_resume_within_an_oversize_message(self):
         original = '\\"\n多字' * 600
         session = {"session_id": "cowork:test", "path": None, "next_from": None, "status": "ok",
