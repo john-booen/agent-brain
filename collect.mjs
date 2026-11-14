@@ -326,6 +326,10 @@ async function collect() {
     if (!selected.length || selected.includes(agent)) item.indexedAt = report.completedAt;
     else item.indexedAt ||= priorReport.completedAt;
   }
+  for (const [source, item] of Object.entries(report.sources)) {
+    if (item.failed) await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'source_collection',
+      source, at: report.completedAt, status: 'partial', failed: item.failed }) + '\n', { mode: 0o600 });
+  }
   if (report.exit) {
     for (const item of Object.values(report.sources)) item.syncIncomplete = true;
   }
