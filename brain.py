@@ -571,7 +571,7 @@ def project_contents(db, project, include_log=False, model_sessions=()):
         LEFT JOIN project_record_exclusions e ON e.work_id=w.id
         LEFT JOIN project_record_moves m ON m.work_id=w.id
         WHERE w.project_id=?
-        ORDER BY occurred DESC, kind='log' DESC, id DESC
+        ORDER BY occurred DESC, kind='log' DESC, w.rowid DESC
     """, (project["id"],))]
     cited_items = [(row, key, item) for row, data in rows if row['kind'] == 'log'
                    for key in ARRAYS for item in data.get(key, []) if type(item.get('ordinal')) is int]

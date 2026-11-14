@@ -13,7 +13,7 @@ import file_text
 import notes
 
 
-VERSION = 26
+VERSION = 27
 FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -103,7 +103,7 @@ def work_rows(db, project_id):
           WHERE w2.session_id=w.session_id AND e2.work_id IS NULL) AS project_count
         FROM work w LEFT JOIN project_record_exclusions e ON e.work_id=w.id
         WHERE w.project_id=? AND e.work_id IS NULL
-        ORDER BY w.occurred, w.id
+        ORDER BY w.occurred, w.rowid
     """, (project_id,)))
 
 
@@ -121,6 +121,10 @@ def source_versions(index, sessions):
 def citation(row, ordinal=None, time=None):
     return {'source': row['source'], 'session_id': row['session_id'] or row['id'],
             'ordinal': ordinal, 'time': time or row['occurred']}
+
+
+def work_order(item):
+    return item['ref']['time'], item.get('recorded_order', 0)
 
 
 def format_reference(ref):
@@ -369,9 +373,9 @@ def finish_entries(inputs, deliveries, rules, approvals):
         key = group_by_task(item, key, confirmed_version)
         versions = grouped[key]
         path = path or f"{item['ref']['session_id']}#{item['ref']['ordinal']}"
-        rank = (item.get('pinned', False), item['ref']['time'], item.get('recorded', False))
+        rank = (item.get('pinned', False), work_order(item), item.get('recorded', False))
         current = versions.get(path)
-        if not current or rank >= (current.get('pinned', False), current['ref']['time'], current.get('recorded', False)):
+        if not current or rank >= (current.get('pinned', False), work_order(current), current.get('recorded', False)):
             versions[path] = {**item, 'final': item.get('final', False) or bool(current and current.get('final'))}
     # Fold duplicate paths explicitly registered under a task into that task.
     registered = {path: key for key, versions in grouped.items() for path, item in versions.items() if item.get('explicit_task')}
@@ -402,12 +406,12 @@ def finish_entries(inputs, deliveries, rules, approvals):
         if options:
             options.sort(key=lambda item: (item.get('pinned', False),
                                            (item.get('approval') or item['ref'])['time'] if item.get('pinned') else '',
-                                           item.get('final', False), item['ref']['time'], item.get('reused', False)), reverse=True)
+                                           item.get('final', False), work_order(item), item.get('reused', False)), reverse=True)
             winners.append(options[0])
             history.extend({'kind': '旧版本', **item} for item in options[1:])
-    winners.sort(key=lambda item: (item.get('pinned', False), item.get('final', False), item['ref']['time']), reverse=True)
+    winners.sort(key=lambda item: (item.get('pinned', False), item.get('final', False), work_order(item)), reverse=True)
     decisions = {}
-    for rule in sorted(rules, key=lambda item: item['ref']['time'], reverse=True):
+    for rule in sorted(rules, key=work_order, reverse=True):
         item = normalize_rule(rule)
         key = (item['topic'], item['scope'], item.get('task') or '')
         if key not in decisions:
@@ -454,9 +458,11 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
     outcomes = []
     modeled_sessions = set()
     extracted = extracted or {}
-    for row in [*rows, *(extra_rows or [])]:
+    for position, row in enumerate([*rows, *(extra_rows or [])], 1):
         data = json.loads(row['data'])
         sid = row['session_id']
+        # work_rows sorts tied timestamps by SQLite insertion order.
+        recorded_order = position if row['kind']=='log' else 0
         cwd = versions.get(sid, ('', None))[1]
         if sid in extracted:
             if sid not in modeled_sessions:
@@ -473,7 +479,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
             inputs.append(entry(available_path(item.get('path'), cwd), ref, text=item.get('text'), recorded=True))
         for item in data.get('rules', []):
             ref = recorded_reference(index, row, item, 'rules', visible)
-            rules.append({**item, 'ref': ref, 'recorded': True})
+            rules.append({**item, 'ref': ref, 'recorded': True, 'recorded_order': recorded_order})
         file_entries = [(kind, item) for kind in ('files', 'deliverables') for item in data.get(kind, [])]
         for kind, item in file_entries:
             ref = recorded_reference(index, row, item, kind, visible)
@@ -491,7 +497,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
             deliveries.append(entry(path, ref, task=item.get('task'), status=inferred_status,
                                     explicit_task=bool(item.get('task')), final=item.get('final', False),
                                     pinned=pinned,
-                                    recorded=row['kind'] == 'log', legacy=True))
+                                    recorded=row['kind'] == 'log', recorded_order=recorded_order, legacy=True))
             delivery_by_name[Path(path).name].add(path)
 
     raw_inputs, outputs, reused = set(), set(), set()

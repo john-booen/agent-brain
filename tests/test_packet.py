@@ -244,6 +244,22 @@ class PacketTest(unittest.TestCase):
                       deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
             self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
+    def test_same_second_cross_client_handoff_uses_insertion_order(self):
+        old = self.root / 'original.md'
+        new = self.root / 'revision.md'
+        old.write_text('# Checklist\nOwner is Amy.')
+        new.write_text('# Checklist\nOwner is Sam.')
+        with patch.object(brain, 'now', return_value='2026-01-01T00:00:00+00:00'):
+            for source, work_id, path, owner in (('codex','a-original',old,'Amy'),('kimi-work','z-revision',new,'Sam')):
+                self.tool('log_work', project='Atlas', create_project=True, source=source, work_id=work_id,
+                          summary=f'{owner} owns the checklist.',
+                          deliverables=[{'path':str(path),'task':'Checklist','final':True}],
+                          rules=[{'text':f'Ask {owner} for sign-off.','topic':'reviewer'}])
+        self.assertIn(new.name, self.tool('get_project',project='Atlas',section='deliverables')['card'])
+        self.assertIn('Owner is Sam.', self.tool('read_file',project='Atlas',path=new.name)['text'])
+        self.assertIn(old.name, self.tool('get_project',project='Atlas',section='history')['card'])
+        self.assertIn('Ask Sam', self.tool('get_project',project='Atlas',section='rules')['card'])
+
     def test_work_log_citations_use_source_and_mark_unverified_items(self):
         sid = 'cowork:fictional-source-date'
         report = self.root / 'export' / 'report.md'
