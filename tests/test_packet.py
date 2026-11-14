@@ -33,7 +33,7 @@ class PacketTest(unittest.TestCase):
     def test_optional_rule_topic_in_new_and_legacy_records(self):
         file = self.root / 'source.md'
         file.write_text('# Figures\nSource figures.')
-        args = dict(project='Atlas', summary='Review figures.', source='codex', work_id='legacy',
+        args = dict(project='Atlas', create_project=True, summary='Review figures.', source='codex', work_id='legacy',
                     inputs=[{'path': str(file)}], rules=[{'text': '对外口径保守'}])
         record = self.tool('log_work', **args)
         stored = json.loads(self.db.execute('SELECT data FROM work WHERE id=?', ('legacy',)).fetchone()[0])
@@ -57,7 +57,7 @@ class PacketTest(unittest.TestCase):
         builder.chmod(0o700)
         todo = self.root / 'USER_TODO.md'
         todo.write_text('# Pending work\n')
-        self.tool('log_work', project='Atlas', summary='Initial record.', source='codex')
+        self.tool('log_work', project='Atlas', create_project=True, summary='Initial record.', source='codex')
         env = {**os.environ, 'HOME': str(self.root), 'AGENT_BRAIN_DATA': str(self.data), 'AGENT_BRAIN_SYNC_DAEMON': '0',
                'AGENTSVIEW_BIN': str(archive), 'AGENT_BRAIN_PACKET_PYTHON': str(builder), 'AGENT_BRAIN_USER_TODO': str(todo)}
         cmd = ['node', str(Path(brain.__file__).with_name('collect.mjs')), 'codex']
@@ -85,12 +85,12 @@ class PacketTest(unittest.TestCase):
         v2.write_text('# Valuation\nDifferent assumptions.')
         sid = 'codex:fictional-confirmation'
         self.archive_messages(sid, 'Atlas', [('user', f'这份 {v1.name} 作为终版')])
-        initial = self.tool('log_work', project='Atlas', summary='Prior reviewed version', source='codex', work_id='old', session_id=sid,
+        initial = self.tool('log_work', project='Atlas', create_project=True, summary='Prior reviewed version', source='codex', work_id='old', session_id=sid,
                             inputs=[{'text': 'User source material'}],
                             deliverables=[{'path': str(v1), 'task': 'Valuation', 'confirmed': True, 'ordinal': 0}],
                             rules=[{'text': 'Use internal figures.', 'topic': 'scope', 'scope': '项目'}])
         with patch.object(brain, 'now', return_value='2030-01-01T00:00:00+00:00'):
-            self.tool('log_work', project='Atlas', summary='New proposal', source='kimi-work', work_id='new',
+            self.tool('log_work', project='Atlas', create_project=True, summary='New proposal', source='kimi-work', work_id='new',
                       deliverables=[{'path': str(v2), 'task': 'Valuation', 'final': True}],
                       rules=[{'text': 'Use public figures.', 'topic': 'scope', 'scope': '对外版本'}])
         card = self.tool('get_project', project='Atlas')
@@ -117,7 +117,7 @@ class PacketTest(unittest.TestCase):
         for path in paths:
             path.parent.mkdir()
             path.write_text(f'# Figures\n{path.parent.name}')
-        self.tool('log_work', project='Atlas', summary='Registered two separate sources', source='codex',
+        self.tool('log_work', project='Atlas', create_project=True, summary='Registered two separate sources', source='codex',
                   inputs=[{'path': str(path)} for path in paths])
         with self.assertRaisesRegex(ValueError, '多份登记文件'):
             self.tool('read_file', project='Atlas', path='source.md', section='Figures')
@@ -149,7 +149,7 @@ class PacketTest(unittest.TestCase):
             ('user', '可以'),
             ('assistant', f'已交付 [现场提纲]({other})'),
         ])
-        record = self.tool('log_work', project='Atlas', summary='Completed the project', source='kimi-work', session_id=sid)
+        record = self.tool('log_work', project='Atlas', create_project=True, summary='Completed the project', source='kimi-work', session_id=sid)
         payload, _ = brain.packet.load(self.db, self.data, record['project_id'], brain.visible, brain.clean)
         self.assertEqual({x['path'] for x in payload['deliverables']}, {str(final), str(other)})
         self.assertTrue(next(x for x in payload['deliverables'] if x['path'] == str(final))['pinned'])
@@ -161,13 +161,13 @@ class PacketTest(unittest.TestCase):
             self.assertIn('终版', self.tool('get_project', project='Atlas')['card'])
 
     def test_project_redirect_and_record_move_preserve_original_ids(self):
-        a = self.tool('log_work', project='Atlas', summary='Initial progress', source='codex', work_id='one')
-        b = self.tool('log_work', project='Atlas materials', summary='Generated materials', source='codex', work_id='two')
-        c = self.tool('log_work', project='Separate event', summary='Event plan', source='codex', work_id='three')
+        a = self.tool('log_work', project='Atlas', create_project=True, summary='Initial progress', source='codex', work_id='one')
+        b = self.tool('log_work', project='Atlas materials', create_project=True, summary='Generated materials', source='codex', work_id='two')
+        c = self.tool('log_work', project='Separate event', create_project=True, summary='Event plan', source='codex', work_id='three')
         brain.merge_projects(self.db, 'Atlas', ['Atlas materials'], 'Same project and materials')
         self.assertEqual(self.tool('get_project', project=b['project_id'])['id'], a['project_id'])
         self.assertEqual(len(brain.project_list(self.db)), 2)
-        retry = self.tool('log_work', project='Atlas materials', summary='Generated materials', source='codex', work_id='two')
+        retry = self.tool('log_work', project='Atlas materials', create_project=True, summary='Generated materials', source='codex', work_id='two')
         self.assertFalse(retry['written'])
         brain.move_project_record(self.db, 'two', 'Separate event', 'Matched the event handoff')
         self.assertEqual(self.db.execute('SELECT project_id FROM work WHERE id=?', ('two',)).fetchone()[0], c['project_id'])
@@ -177,25 +177,35 @@ class PacketTest(unittest.TestCase):
         for name, fields in [('Status only', {'status': '用户确认'}), ('No message', {'confirmed': True})]:
             file = self.root / f'{name}.md'
             file.write_text('# Figures\nSource figures.')
-            self.tool('log_work', project=name, summary='Record without confirmation evidence.', source='codex',
+            self.tool('log_work', project=name, create_project=True, summary='Record without confirmation evidence.', source='codex',
                       deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
             self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
     def test_antigravity_can_log_without_becoming_an_archive_source(self):
-        result = self.tool('log_work', project='Atlas', summary='Fictional handoff.', source='antigravity')
+        result = self.tool('log_work', project='Atlas', create_project=True, summary='Fictional handoff.', source='antigravity')
         self.assertTrue(result['written'])
         self.assertIn('antigravity', self.tool('get_project', project='Atlas')['card'])
         self.assertNotIn('antigravity', brain.SOURCES)
 
     def test_bound_client_normalizes_and_records_source_mismatches(self):
         with patch.dict(os.environ, {'AGENT_BRAIN_SOURCE': 'cowork'}):
-            args = dict(project='Atlas', summary='Fictional handoff.', work_id='handoff')
+            args = dict(project='Atlas', create_project=True, summary='Fictional handoff.', work_id='handoff')
             self.assertTrue(self.tool('log_work', source='codex', **args)['written'])
             self.assertFalse(self.tool('log_work', **args)['written'])
         self.assertEqual(self.db.execute('SELECT source FROM work').fetchone()[0], 'cowork')
         event = json.loads((self.data / 'health.log').read_text())
         self.assertEqual((event['event'], event['source'], event['requested_source']),
                          ('log_source_mismatch', 'cowork', 'codex'))
+
+    def test_similar_names_require_a_choice_without_writing(self):
+        args = dict(summary='Fictional handoff.', source='codex')
+        first = self.tool('log_work', project='Fictional Atlas', create_project=True, **args)
+        result = self.tool('log_work', project='Fictional Atlas 项目', **args)
+        self.assertEqual(result['status'], 'choose_project')
+        self.assertIn(first['project_id'], {item['id'] for item in result['projects']})
+        self.assertEqual(self.tool('log_work', project='Unrelated', **args)['status'], 'new_project')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM work').fetchone()[0], 1)
+        self.assertFalse(self.tool('log_work', project=first['project_id'], **args)['created_project'])
 
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'

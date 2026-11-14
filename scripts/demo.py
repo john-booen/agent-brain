@@ -45,7 +45,7 @@ def run(data, name, arguments):
 
 with tempfile.TemporaryDirectory(prefix="agent-brain-demo-") as data:
     fixture = json.loads((root / "examples" / "demo.json").read_text())
-    assert run(data, "log_work", fixture)["written"]
+    assert run(data, "log_work", {**fixture, "create_project": True})["written"]
     print("Codex → log_work")
     print("Cowork demo client → get_project")
     print(run(data, "get_project", {"project": fixture["project"]})["card"])

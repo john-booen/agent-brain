@@ -434,6 +434,8 @@ def project_name_score(query, name, fuzzy):
         return 0.87
     if not fuzzy:
         return 0
+    if len(name) >= 3 and name in query:
+        return 0.86
     if len(query) >= 4:
         short, full = query.replace(" ", ""), name.replace(" ", "")
         positions = iter(full)
@@ -773,7 +775,7 @@ def packet_log_item(value, kind):
     return item
 
 
-def log_work(db, project, summary, source=None, session_id=None, work_id=None, **details):
+def log_work(db, project, summary, source=None, session_id=None, work_id=None, create_project=False, **details):
     configured = os.environ.get("AGENT_BRAIN_SOURCE")
     if configured and configured not in LOG_SOURCES:
         raise ValueError("Invalid AGENT_BRAIN_SOURCE")
@@ -818,6 +820,11 @@ def log_work(db, project, summary, source=None, session_id=None, work_id=None, *
     key = clean(work_id) if work_id else stable(json_text([project, source, session_id, identity_payload]))
     db.execute("BEGIN IMMEDIATE")
     try:
+        if not resolve_project_id(db, project) and not create_project:
+            candidates = find_project(db, project)["projects"]
+            db.rollback()
+            return {"written": False, "status": "choose_project" if candidates else "new_project",
+                    "projects": candidates}
         pid, created = ensure_project(db, project, payload["reason"])
         cursor = db.execute("INSERT OR IGNORE INTO work VALUES(?,?,?,?,?,?,?)",
                             (key, pid, "log", now(), source, session_id, json_text(payload)))
@@ -1335,7 +1342,7 @@ TOOLS = {
                    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET}, ['path']),
     "log_work": ("Record completed work in the shared project. Old transcripts are read-only.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
-                  "session_id": STRING, "work_id": STRING,
+                  "session_id": STRING, "work_id": STRING, "create_project": {"type": "boolean"},
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
                   **{key: {'type': 'array', 'items': schema} for key, schema in PACKET_ITEM_SCHEMAS.items()}},
                  ["project", "summary"]),
@@ -1355,6 +1362,8 @@ def call_tool(db, name, args):
                                            or ("enum" in schema and value not in schema["enum"])):
             raise ValueError("Invalid " + key)
         if schema["type"] == "integer" and (type(value) is not int or not schema["minimum"] <= value <= schema.get("maximum", value)):
+            raise ValueError("Invalid " + key)
+        if schema["type"] == "boolean" and type(value) is not bool:
             raise ValueError("Invalid " + key)
         if schema['type'] == 'array' and (not isinstance(value, list) or len(value) > 30):
             raise ValueError('Invalid ' + key)

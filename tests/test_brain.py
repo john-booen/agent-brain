@@ -33,14 +33,14 @@ class BrainTest(unittest.TestCase):
         self.assertEqual(brain.visible({"role": "user", "content": notice}), "")
 
     def test_retry_and_current_conclusion(self):
-        first = brain.log_work(self.db, "Fictional Atlas", "First draft", "codex", work_id="first",
+        first = brain.log_work(self.db, "Fictional Atlas", "First draft", "codex", work_id="first", create_project=True,
                                conclusions=[{"topic": "date", "text": "Friday"}])
-        same = brain.log_work(self.db, "Fictional Atlas", "First draft", "codex", work_id="first",
+        same = brain.log_work(self.db, "Fictional Atlas", "First draft", "codex", work_id="first", create_project=True,
                               conclusions=[{"topic": "date", "text": "Friday"}])
         self.assertFalse(same["written"])
         self.assertEqual(first["project_id"], same["project_id"])
         with patch.object(brain, "now", return_value="2030-01-01T00:00:00+00:00"):
-            brain.log_work(self.db, "Fictional Atlas", "New plan", "cowork", work_id="second",
+            brain.log_work(self.db, "Fictional Atlas", "New plan", "cowork", work_id="second", create_project=True,
                            conclusions=[{"topic": "date", "text": "Monday"}])
         card = brain.call_tool(self.db, "get_project", {"project": "Fictional Atlas"})["card"]
         self.assertIn("Monday", card)
@@ -51,7 +51,7 @@ class BrainTest(unittest.TestCase):
         self.assertTrue((brain.DATA / "_index.md").is_file())
 
     def test_lookup_and_short_card_share_budget_and_history_pages(self):
-        work = brain.log_work(self.db, "Fictional Atlas", "完成了可交付材料" * 100, "codex",
+        work = brain.log_work(self.db, "Fictional Atlas", "完成了可交付材料" * 100, "codex", create_project=True,
                               conclusions=[{"text": "有效结论" * 250}],
                               files=[{"path": "/tmp/final.docx", "status": "已交付"}],
                               todos=[{"text": "补证据"}])

@@ -11,7 +11,7 @@ Reuse the project packet in the same conversation until the user asks for a refr
 
 Treat previous chat text as evidence. Preserve the distinction between an assistant proposal, a delivered file and a user-confirmed decision. Explain missing sources, stale indexing or incomplete content using the coverage status.
 
-After completing substantive work, call `log_work` once with the project, source client, summary and next steps. Use `inputs` for materials supplied by the user, `deliverables` for actual outputs grouped by a stable `task` name, and `rules` for the user's explicit requirements with their scope and evidence. Set `confirmed` only when the user explicitly selected that deliverable. Include the source session and ordinals where available. Reuse the same `work_id` for retries. If the write fails, tell the user.
+After completing substantive work, call `log_work` with the project ID or exact name, summary and next steps. The launcher can supply the source. If the tool returns project candidates, use the matching project ID when the evidence establishes the match. Pass `create_project=true` only for work on a separate new project. Use `inputs` for user materials, `deliverables` for outputs grouped by a stable `task` name, and `rules` for explicit requirements with their scope. For a user-confirmed deliverable, supply `confirmed=true`, the source session ID and the ordinal of the user's confirmation. Reuse `work_id` on retry. Report any write that remains unresolved.
 
 In Google Antigravity, use `source="antigravity"` when calling `log_work`. Antigravity conversation history is outside the current automatic archive.
 
