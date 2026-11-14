@@ -27,6 +27,7 @@ For a confirmed item, quote the user's explicit acceptance and include "delivery
 earlier assistant handoff of that exact version. For a file use its path from that handoff.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
+When asked about formatting, use the short format quote attached to each historical delivery.
 An assistant message with inline_sections has that many sections in the original chat. Their text is
 kept locally. For a written-in-chat handoff, cite the message as the location and distinguish it
 from a separate file. Read the source's introduction to decide what those sections contain.
@@ -193,9 +194,17 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
                 ordering.setdefault(key, (1,0,0,0,ordinal))
                 found = re.search(r'(?i)\bsha(?:256)?\s*[:：` ]*([0-9a-f]{64})(?![0-9a-f])',row['text'])
                 pages = re.search(r'(\d{1,4})\s*页',row['text'])
+                format_quote = None
+                if Path(path).suffix.lower()=='.docx':
+                    # A format quote can be assigned to a specific delivery only when it names one Word file.
+                    files = {p for p in row.get('files', []) if Path(p).suffix.lower()=='.docx'}
+                    if files=={path}:
+                        format_quote = re.search(r'无(?:页眉(?:[、和及／/])?)?页脚|(?:没有|去掉|移除|删除)(?:了)?页脚|'
+                                                 r'(?:`PAGE`|(?i:\bPAGE\b))\s*域|\b(?i:no footer|removed (?:the )?footer)\b',row['text'])
                 discovered[key] = {'path':path,'time':row['time'],
                                    **({'sha256':found[1].lower()} if found else {}),
-                                   **({'reported_pages':int(pages[1])} if pages else {})}
+                                   **({'reported_pages':int(pages[1])} if pages else {}),
+                                   **({'reported_format_quote':format_quote[0]} if format_quote else {})}
         if not discovered:
             continue
         latest = sorted(discovered, key=lambda k:(discovered[k]['time'] or '',k))[::-1]
@@ -222,7 +231,8 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
             current = {'basename':p.name,'sha256':digest,
                        'modified':datetime.fromtimestamp(after.st_mtime,timezone.utc).isoformat()}
             current_path = resolved
-            predecessor = discovered[latest[0]].get('sha256') if key==latest[0] else None
+            predecessor = next((discovered[prior]['sha256'] for prior in latest if discovered[prior].get('sha256')
+                                and packet.available_path(discovered[prior]['path'],metadata[prior[0]][1])==resolved),None)
             if predecessor:
                 current['matches_latest_reported_sha256'] = predecessor==digest
             break
@@ -434,17 +444,21 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
                                 **{k:v for k,v in record.items() if k!='path'}})
                 if current_path and packet.available_path(record['path'],metadata[sid][1])==current_path:
                     same_path.append((ref,record))
-        if len(same_path)>=2:
-            last = same_path[-1]
+        with_pages = [(ref,record) for ref,record in same_path if record.get('reported_pages')]
+        if len(with_pages)>=2:
+            last = with_pages[-1]
             after = last[1].get('reported_pages')
-            if after:
-                latest_row = evidence[last[0]]
-                for ref, record in same_path[:-1]:
-                    pages = record.get('reported_pages')
-                    if pages and pages!=after:
-                        local_versions[ref] = {'session_id':latest_row['session_id'],'ordinal':latest_row['ordinal'],
-                                               'reported_pages':[pages,after],
-                                               'current_matches_reported_hash':current.get('matches_latest_reported_sha256')}
+            latest_row = evidence[last[0]]
+            for ref, record in with_pages[:-1]:
+                pages = record['reported_pages']
+                if pages!=after:
+                    local_versions[ref] = {'session_id':latest_row['session_id'],'ordinal':latest_row['ordinal'],
+                                           'reported_pages':[pages,after],
+                                           'current_matches_reported_hash':(
+                                               current['sha256']==last[1]['sha256'] if last[1].get('sha256') else None)}
+                    formats = [record.get('reported_format_quote'),last[1].get('reported_format_quote')]
+                    if all(formats):
+                        local_versions[ref]['reported_format_quotes'] = formats
         if history:
             entry = {'history':history,'current':current}
             delta = len(encode(entry).encode())+1
@@ -646,6 +660,8 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
             later_ref = session_refs.setdefault(later_sid,str(len(session_refs)+1))
             item['later_version'] = {'session':later_ref,'ordinal':later['ordinal'],
                                      'reported_pages':later['reported_pages']}
+            if later.get('reported_format_quotes'):
+                item['later_version']['reported_format_quotes'] = later['reported_format_quotes']
             if later['current_matches_reported_hash'] is not None:
                 item['later_version']['current_matches_reported_hash'] = later['current_matches_reported_hash']
         item['text']=extraction.text_excerpt(row['text'],140 if position-offset<3 else 75)

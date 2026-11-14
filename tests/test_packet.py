@@ -712,7 +712,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'
-        version = self.root/'agenda.md'
+        version = self.root/'agenda.docx'
         version.write_text('PRIVATE_CURRENT_FILE')
         historical_hash = 'a' * 64
         selected = json.dumps({'kind':'answer_to_pending_question',
@@ -720,8 +720,9 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                                              'options':[{'label':'Go with the small room','description':'Two teams only'}]}],
                                'answers':[{'id':'q','selected':['Go with the small room']}]})
         dialogue = [('user',selected),('user','Atlas agenda version?'),
-                    ('assistant',f'Agenda in `{version}` had 2 页. SHA256: {historical_hash}'),
-                    ('assistant',f'The agenda in `{version}` was replaced with 1 页. SHA256: {historical_hash}')]
+                    ('assistant',f'Agenda in `{version}` had 2 页. Uses `PAGE` 域. SHA256: {historical_hash}'),
+                    ('assistant',f'The agenda in `{version}` was replaced with 1 页. No footer. SHA256: {historical_hash}'),
+                    ('assistant',f'Compared `{version}` with `{self.root}/notice.docx`. The files had no footer.')]
         self.archive_messages(sid,'Atlas',dialogue + [('user','Unrelated test turn')]*150)
         self.tool('log_work',project='Atlas',create_project=True,summary='Agenda history.',source='codex',session_id=sid)
         with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
@@ -738,12 +739,14 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             result,evidence,_=package('What was the Atlas agenda version?')
         self.assertNotIn('PRIVATE_CURRENT_FILE',str(result))
         timeline=next(item for item in result['file_timelines'] if item['current'])
-        self.assertEqual([row['reported_pages'] for row in timeline['history']],[2,1])
+        self.assertEqual([row.get('reported_pages') for row in timeline['history'][:2]],[2,1])
+        self.assertEqual([row.get('reported_format_quote') for row in timeline['history']],['`PAGE` 域','No footer',None])
         self.assertFalse(timeline['current']['matches_latest_reported_sha256'])
         old_ref=timeline['history'][0]['ref']
         local=brain.recall.local_evidence({old_ref:evidence[old_ref]},brain.json_text,None)
         self.assertEqual(local['evidence'][0]['later_version'],
-                         {'session':'1','ordinal':3,'reported_pages':[2,1],'current_matches_reported_hash':False})
+                         {'session':'1','ordinal':3,'reported_pages':[2,1],'reported_format_quotes':['`PAGE` 域','No footer'],
+                          'current_matches_reported_hash':False})
 
     def test_recall_search_uses_agentsview_trigrams_for_full_words(self):
         with sqlite3.connect(':memory:') as db:
