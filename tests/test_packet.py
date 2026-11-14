@@ -376,6 +376,14 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(json.loads(body)['tokens'], 4)
         self.assertTrue(json.loads(body)['hit'])
 
+    def test_recall_telemetry_counts_evidence_without_storing_it(self):
+        write = brain.usage.record
+        write(self.data, 'codex', 'recall', {'level': 4, 'navigation': 'private navigation'}, '{}', False, None)
+        write(self.data, 'codex', 'recall', {'level': 3, 'evidence': [{'text': 'private evidence'}]}, '{}', False, None)
+        records = [json.loads(line) for line in (self.data / 'usage.jsonl').read_text().splitlines()]
+        self.assertEqual([(row['hit'], row['recall_level']) for row in records], [(False, 4), (True, 3)])
+        self.assertNotIn('private', str(records))
+
     def test_weekly_report_excludes_test_calls_and_reports_missing_measurement(self):
         self.tool('log_work', project='Atlas', create_project=True, source='codex', summary='Initial record.')
         records = [

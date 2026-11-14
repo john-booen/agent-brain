@@ -41,6 +41,9 @@ def record(directory, source, name, response, encoded, error, count_tokens, orig
     row['utf8_bytes'] = len(encoded.encode())
     if error:
         row['hit'] = False
+    elif name == 'recall':
+        row['hit'] = bool(response.get('evidence'))
+        row['recall_level'] = response.get('level')
     elif 'matches' in response:
         row['hit'] = bool(response['matches'])
     elif 'projects' in response:
@@ -117,7 +120,7 @@ def weekly(db, data, date=None):
             item['measured'] += 1
             item['tokens'] += row['tokens']
     report = ['# 本周使用情况', '', f'{start.date()} 至 {finish.date() - timedelta(days=1)}', '',
-              '| 客户端 | 工具 | 调用 | 命中 | 有 Token 计量的调用 | Token |',
+              '| 客户端 | 工具 | 调用 | 有结果 | 有 Token 计量的调用 | Token |',
               '|---|---|---:|---:|---:|---:|']
     for (source, tool), row in sorted(totals.items()):
         report.append(f"| {source} | {tool} | {row['calls']} | {row['hits']} | {row['measured']} | {row['tokens']} |")
