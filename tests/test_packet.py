@@ -282,6 +282,19 @@ class PacketTest(unittest.TestCase):
         with sqlite3.connect(brain.health.backup(self.db, self.data)) as snapshot:
             self.assertEqual(snapshot.execute('SELECT name FROM projects').fetchone(), ('Atlas',))
 
+    def test_rate_limit_leaves_a_visible_status_and_stops_until_next_window(self):
+        sid = 'codex:fictional-quota'
+        self.archive_messages(sid, 'Atlas', [('user', 'Please continue the fictional project.')])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex', summary='Initial record.')
+        with patch.object(brain, 'model', side_effect=brain.ModelQuotaError('120')) as model:
+            for _ in range(2):
+                status = brain.extraction.process(self.db, self.data, [sid], brain.visible, brain.packet.paths_in,
+                                                  brain.json_text, brain.clean, model, 20000)
+                self.assertTrue(status['rate_limited'])
+            self.assertEqual(model.call_count, 1)
+        self.assertIn('模型提取', self.tool('get_project', project='Atlas')['coverage'])
+        self.assertIn('模型提取', self.tool('list_projects')['coverage'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

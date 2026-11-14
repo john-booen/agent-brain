@@ -190,6 +190,14 @@ def candidates(db, sid, dialogue):
             if r['last'] or (len(r['name']) > 2 and r['name'].casefold() in text)][:40]
 
 
+def model_source_health(db):
+    active = datetime.now(timezone.utc) - timedelta(hours=24)
+    last = db.execute('SELECT status,at FROM packet_extraction_attempts ORDER BY id DESC LIMIT 1').fetchone()
+    if last and last['status'] not in {'ok','started'} and datetime.fromisoformat(last['at']) >= active:
+        return '模型提取最近失败，仍可检索已有资料'
+    return ''
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 

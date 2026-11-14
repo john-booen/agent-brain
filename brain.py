@@ -483,6 +483,8 @@ def recent_projects(db, offset=0, days=30, limit=20, min_records=2):
     rows = [project_index_entry(row) for row in project_list(db)
             if row["records"] >= min_records and (row["updated"] or "") >= since]
     result = {"projects": [], "next_offset": None, **(packet_coverage() if offset == 0 else {})}
+    if offset == 0 and 'coverage' not in result and (warning := extraction.model_source_health(db)):
+        result["coverage"] = warning
     for index, row in enumerate(rows[offset:offset + limit], offset):
         result["projects"].append(row)
         result["next_offset"] = index + 1 if index + 1 < len(rows) else None
@@ -571,9 +573,9 @@ def card_entry(entry):
     return f"{text} — {source} {day[:10]}"
 
 
-def project_overview(project, sections, extraction_method='规则推断'):
+def project_overview(project, sections, extraction_method='规则推断', coverage=None):
     result = project_index_entry(project)
-    result.update(packet_coverage())
+    result.update(coverage or {})
     result['evidence'] = extraction_method
     result["sections"] = [key for key, items in sections.items() if items]
     status = sections["timeline"][0][2:] if sections["timeline"] else "待补记录"
@@ -645,7 +647,10 @@ def get_project(db, project, section=None, offset=0):
     sections['history'] = [packet_item(db, item, 'history') for item in data['history']] + sections['history']
     if section:
         return project_details(row, section, sections.get(section, []), offset)
-    return project_overview(row, sections, data.get('extraction', '规则推断'))
+    coverage = packet_coverage()
+    if not coverage and (warning := extraction.model_source_health(db)):
+        coverage = {'coverage': warning}
+    return project_overview(row, sections, data.get('extraction', '规则推断'), coverage)
 
 
 def packet_item(db, item, kind, compact=False):
