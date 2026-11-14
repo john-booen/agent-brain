@@ -187,9 +187,12 @@ class PacketTest(unittest.TestCase):
         archive = self.data / 'agentsview'
         archive.mkdir()
         with sqlite3.connect(archive / 'sessions.db') as index:
-            index.executescript('''CREATE TABLE sessions(id,cwd,transcript_revision,display_name,session_name);
+            index.executescript('''CREATE TABLE sessions(id,cwd,transcript_revision,display_name,session_name,
+                                                        message_count,user_message_count,started_at);
                                   CREATE TABLE messages(session_id,ordinal,role,timestamp,content,dialogue_text,is_system);''')
-            index.execute('INSERT INTO sessions VALUES(?,?,?,?,?)', (sid, str(self.root), '1', project, project))
+            index.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)',
+                          (sid,str(self.root),'1',project,project,len(messages),sum(role=='user' for role,_ in messages),
+                           '2026-01-01T00:00:00Z'))
             for n, (role, value) in enumerate(messages):
                 index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,0)', (sid, n, role, f'2026-01-01T00:00:0{n}Z', value, value))
 
@@ -616,6 +619,19 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             _,evidence,_=brain.recall.evidence_package(self.db,index,project,'Atlas silent speaker rehearsal',
                                                        brain.visible,brain.packet.paths_in,brain.json_text,use_tags=False)
         self.assertIn(0,[row['ordinal'] for row in list(evidence.values())[:5]])
+
+    def test_recall_considers_recent_unassigned_tasks_with_a_concrete_result(self):
+        sid = 'deepseek-harness:fictional-unassigned-task'
+        self.archive_messages(sid,'General',[('user','Adjust the Bot model allocation.'),
+                                             ('assistant','回读核对通过，模型共调整 4 个。')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.row_factory=sqlite3.Row
+            project=self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Setup.')['project_id']
+            _,evidence,_=brain.recall.evidence_package(self.db,index,project,'Bot 模型实际改了多少？',
+                                                       brain.visible,brain.packet.paths_in,brain.json_text,use_tags=False)
+        self.assertEqual({(row['session_id'],row['ordinal']) for row in evidence.values()},{(sid,0),(sid,1)})
 
     def test_recall_file_history_does_not_displace_the_best_message(self):
         sid='codex:fictional-repeated-file'

@@ -68,6 +68,26 @@ def numbered_details(text):
     return {match[1] for match in re.finditer(r'(?<![\d.])(\d{1,3})\s*(?=[条句份项个张])', text)}
 
 
+def counted_task_results(index, global_scores, relevance, visible, paths_in, encode):
+    # A complete short task may only mention the topic when the user asks for the work.
+    candidates = index.execute("""SELECT id,substr(id,1,instr(id,':')-1) AS source FROM sessions WHERE deleted_at IS NULL
+        AND message_count<=100 AND user_message_count BETWEEN 1 AND 8
+        AND COALESCE(relationship_type,'')<>'subagent' AND id IN (SELECT value FROM json_each(?))
+        ORDER BY started_at DESC,id""",(json.dumps(sorted(global_scores)),))
+    selected = defaultdict(int)
+    for sid, source in candidates:
+        if selected[source]>=4:
+            continue
+        selected[source]+=1
+        rows = extraction.transcript(index,sid,visible,paths_in,encode,outbound=True,focused=True)
+        first = next((row for row in rows if row['role']=='user'),None)
+        final = next((row for row in reversed(rows) if row['role']=='assistant'),None)
+        if not first or not final or not relevance(first['text']) or not relevance(final['text']):
+            continue
+        if numbered_details(final['text']):
+            yield sid,first,final
+
+
 def text_matches(index, terms, sessions=None):
     if not terms:
         return []
@@ -235,10 +255,15 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
     for score,sid in standout[:4]:
         if not project_id or score>=4:
             admitted.add(sid)
+    if project_id and re.search(r'多少|几(?:个|条|项|份)|\bhow many\b',question,re.I):
+        for sid,first,final in counted_task_results(index,global_scores,relevance,visible,paths_in,encode):
+            admitted.add(sid)
+            found[sid][final['ordinal']]=relevance(first['text'])+relevance(final['text'])+8
+            found[sid][first['ordinal']]=relevance(first['text'])+5
     for sid, ordinal, text in text_matches(index, terms | short_terms, admitted):
         score = relevance(text)
         if score:
-            found[sid][ordinal] = score
+            found[sid][ordinal] = max(found[sid].get(ordinal,0),score)
     if not project_id:
         for sid, scores in global_scores.items():
             found[sid].update(scores)
