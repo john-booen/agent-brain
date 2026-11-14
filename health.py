@@ -46,7 +46,7 @@ def report(db, directory):
                         'incomplete': collection_state(info)=='partial'}
                for source, info in coverage.get('sources', {}).items()}
     archive = directory / 'agentsview' / 'sessions.db'
-    queue = {'pending': 0, 'oldest': None}
+    queue = {'pending': 0, 'oldest': None, 'with_messages_last_24h': 0, 'by_source': {}}
     if archive.is_file():
         with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
             rows = index.execute("""SELECT agent,COUNT(*),SUM(user_message_count>0),SUM(message_count=0),
@@ -68,8 +68,13 @@ def report(db, directory):
                 if item.get('message_gap_over_15m') or item.get('source_modified_over_15m_after_latest_index'):
                     status['incomplete'] = True
             if index.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone():
-                for _, _, _, first in recall.pending_segments(db, index):
+                for _, _, _, first, latest, agent in recall.pending_segments(db, index):
                     queue['pending'] += 1
+                    segment_is_recent = bool(latest and latest>=boundary)
+                    queue['with_messages_last_24h'] += segment_is_recent
+                    queue_source = queue['by_source'].setdefault(agent, {'pending': 0, 'with_messages_last_24h': 0})
+                    queue_source['pending'] += 1
+                    queue_source['with_messages_last_24h'] += segment_is_recent
                     if first and (not queue['oldest'] or first < queue['oldest']):
                         queue['oldest'] = first
     indexed = db.execute("""SELECT COUNT(DISTINCT session_id) FROM work w WHERE kind='summary' AND session_id IS NOT NULL

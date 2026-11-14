@@ -946,16 +946,22 @@ def pending_segments(db, index):
     stored = {(sid, start): finish for sid, start, finish in db.execute(
         'SELECT session_id,start,finish FROM recall_segments')}
     sql = """SELECT m.session_id, CAST(m.ordinal / ? AS INTEGER)*? AS segment_start,
-             max(m.ordinal), min(m.timestamp)
+             max(m.ordinal), min(m.timestamp), max(m.timestamp), s.agent
              FROM messages m JOIN sessions s ON s.id=m.session_id
              WHERE s.deleted_at IS NULL AND m.is_system=0 AND m.role IN ('user','assistant')
              AND s.agent IN ('codex','cowork','deepseek-harness','kimi-work')
              AND NOT (COALESCE(s.relationship_type,'')='subagent'
                       AND COALESCE(s.first_message,'') LIKE 'The following is the Codex agent history%')
              GROUP BY m.session_id, segment_start"""
-    for sid, start, finish, first in index.execute(sql, (SEGMENT_SIZE, SEGMENT_SIZE)):
-        if stored.get((sid, start), -1) < finish:
-            yield sid, start, finish, first
+    for sid, start, finish, first, latest, agent in index.execute(sql, (SEGMENT_SIZE, SEGMENT_SIZE)):
+        tagged = stored.get((sid, start), -1)
+        if tagged >= finish:
+            continue
+        if tagged >= start:
+            first, latest = index.execute("""SELECT min(timestamp),max(timestamp) FROM messages
+                WHERE session_id=? AND ordinal>? AND ordinal<=?
+                AND is_system=0 AND role IN ('user','assistant')""", (sid,tagged,finish)).fetchone()
+        yield sid, start, finish, first, latest, agent
 
 
 def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, clean):
@@ -976,9 +982,9 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
         recent_attempts = {(sid,start,finish) for sid,start,finish in db.execute(
             'SELECT session_id,start,finish FROM recall_tag_attempts WHERE at>=?', (cutoff,))}
         queue = sorted((item for item in pending_segments(db,index) if item[:3] not in recent_attempts),
-                       key=lambda x: (bool(x[3] and x[3]>=day), bool(x[0] in owners), x[3] or ''), reverse=True)
+                       key=lambda x: (bool(x[4] and x[4]>=day), bool(x[0] in owners), x[4] or ''), reverse=True)
         attempts = 0
-        for sid, start, finish, time in queue[:max(30, limit)]:
+        for sid, start, finish, first, _, _ in queue[:max(30, limit)]:
             if attempts >= limit:
                 break
             last = db.execute('SELECT finish,data FROM recall_segments WHERE session_id=? AND start=?', (sid,start)).fetchone()
@@ -989,12 +995,19 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
             card = before
             if rows:
                 attempts += 1
+                attempted_at = datetime.now(timezone.utc).isoformat()
                 with db:
                     db.execute('INSERT OR REPLACE INTO recall_tag_attempts VALUES(?,?,?,?)',
-                               (sid,start,finish,datetime.now(timezone.utc).isoformat()))
+                               (sid,start,finish,attempted_at))
                 try:
                     answer = eco.call(db, settings, [{'role':'system','content':TAG_PROMPT},
                         {'role':'user','content':encode({'messages':rows})}], 'tag', model, encode)
+                except eco.BudgetUnavailable as error:
+                    # Reservations declined in the local ledger did not send a model request.
+                    with db:
+                        db.execute('DELETE FROM recall_tag_attempts WHERE session_id=? AND start=? AND finish=? AND at=?',
+                                   (sid,start,finish,attempted_at))
+                    return {**result, 'status': type(error).__name__}
                 except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
                     return {**result, 'status': type(error).__name__}
                 anchors = answer.get('anchors')
@@ -1013,7 +1026,7 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
                         'tags': list(dict.fromkeys([*before.get('tags',[]), *(clean(v)[:60] for v in tags[:8] if isinstance(v,str))]))[-12:],
                         'anchors': list(dict.fromkeys([*before.get('anchors',[]), *anchors]))[-10:],
                         'delivery_anchors': list(dict.fromkeys([*before.get('delivery_anchors',[]), *deliveries]))[-10:],
-                        'time': time, 'latest_time': index.execute('SELECT timestamp FROM messages WHERE session_id=? AND ordinal=?',
+                        'time': before.get('time') or first, 'latest_time': index.execute('SELECT timestamp FROM messages WHERE session_id=? AND ordinal=?',
                                                                  (sid, finish)).fetchone()[0],
                         'source': index.execute('SELECT agent FROM sessions WHERE id=?', (sid,)).fetchone()[0],
                         'files': list(dict.fromkeys([*before.get('files', []), *(Path(path).name for n in anchors

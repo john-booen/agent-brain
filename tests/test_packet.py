@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from time import sleep
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -740,6 +740,44 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(report['collector_exit'], 1)
         with sqlite3.connect(brain.health.backup(self.db, self.data)) as snapshot:
             self.assertEqual(snapshot.execute('SELECT name FROM projects').fetchone(), ('Atlas',))
+
+    def test_tag_queue_prioritizes_appended_messages_and_retries_after_local_budget_wait(self):
+        sid = 'kimi-work:fictional-append'
+        fresh = 'codex:fictional-new'
+        historic = 'cowork:fictional-history'
+        old = '2026-01-01T00:00:00+00:00'
+        current = datetime.now(timezone.utc)
+        appended = current.isoformat()
+        earlier = (current - timedelta(hours=2)).isoformat()
+        self.archive_messages(sid, 'Atlas', [('user', 'Old tagged request.'), ('user', 'Unprocessed new request.')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent', 'deleted_at', 'relationship_type', 'first_message'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute("UPDATE sessions SET agent='kimi-work'")
+            index.execute('UPDATE messages SET timestamp=CASE WHEN ordinal=0 THEN ? ELSE ? END', (old, appended))
+            for name, agent, when in ((fresh, 'codex', earlier), (historic, 'cowork', old)):
+                index.execute('INSERT INTO sessions(id,agent,started_at) VALUES(?,?,?)', (name, agent, when))
+                index.execute("INSERT INTO messages VALUES(?,0,'user',?,'Separate request.','Separate request.',0)",
+                              (name, when))
+            self.db.execute('INSERT INTO recall_segments VALUES(?,?,?,?,?,?)',
+                            (sid, 0, 0, 'saved', old, json.dumps({'time': old, 'summary': 'Old tag.'})))
+            queue = {row[0]:row[3:] for row in brain.recall.pending_segments(self.db, index)}
+            self.assertEqual(queue[sid], (appended, appended, 'kimi-work'))
+            self.assertEqual(queue[fresh], (earlier, earlier, 'codex'))
+            self.assertEqual(queue[historic], (old, old, 'cowork'))
+        args = (self.db, self.data, {'enabled': True}, 1, brain.visible,
+                brain.packet.paths_in, brain.json_text, brain.model, brain.clean)
+        with patch.object(brain.eco, 'call', side_effect=brain.eco.BudgetUnavailable('Wait for the ledger')) as call:
+            result = brain.recall.tag_batch(*args)
+            self.assertEqual(result['status'], 'BudgetUnavailable')
+            payload = json.loads(call.call_args.args[2][1]['content'])
+            self.assertEqual([row['ordinal'] for row in payload['messages']], [1])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM recall_tag_attempts').fetchone()[0], 0)
+        with patch.object(brain.eco, 'call', return_value={'summary': 'Current tag.', 'tags': [], 'anchors': [1]}):
+            self.assertEqual(brain.recall.tag_batch(*args)['indexed'], 1)
+        finish, raw = self.db.execute('SELECT finish,data FROM recall_segments WHERE session_id=?',(sid,)).fetchone()
+        self.assertEqual(finish, 1)
+        self.assertEqual(json.loads(raw)['time'], old)
 
     def test_health_reports_source_files_separately_from_indexed_sessions(self):
         (self.data / 'coverage.json').write_text(json.dumps({'sources': {
