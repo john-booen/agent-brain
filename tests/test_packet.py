@@ -397,6 +397,20 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         word.write_text('changed')
         self.assertIsNone(brain.packet.file_summary(self.db, value))
 
+    def test_file_summary_uses_the_outline_and_explicit_takeaway(self):
+        path = self.root / 'rehearsal.md'
+        path.write_text('Introduction text that should not appear as a takeaway.\n'
+                        '# Rehearsal\nA day-by-day schedule.\n'
+                        '# Summary\nThe coordinator owns rollback for Friday. Review the smoke check.')
+        built, summary, method = brain.packet.prepare_file(self.db, str(path), brain.clean)
+        self.assertEqual((built, method), ('built', brain.packet.FILE_SUMMARY_METHOD))
+        self.assertIn('The coordinator owns rollback for Friday.', summary)
+        self.assertIn('Rehearsal', summary)
+        self.assertNotIn('Introduction', summary)
+        self.db.execute("UPDATE packet_file_summaries SET method='extractive'")
+        self.assertIsNone(brain.packet.file_summary(self.db, str(path)))
+        self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'built')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -13,6 +13,11 @@ from zipfile import BadZipFile, ZipFile
 SUPPORTED = {".docx", ".pdf", ".xlsx", ".md", ".markdown", ".txt", ".csv", ".tsv"}
 MAX_FILE = 40 * 1024 * 1024
 MAX_XML = 16 * 1024 * 1024
+DOCUMENT_KINDS = {
+    '.docx': 'Word 文档', '.pdf': 'PDF 文档', '.xlsx': 'Excel 工作簿',
+    '.md': 'Markdown 文档', '.markdown': 'Markdown 文档', '.txt': '文本',
+    '.csv': '表格数据', '.tsv': '表格数据',
+}
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -236,27 +241,34 @@ def extract(path, data, section=None, page=None, preview=False):
     return parts
 
 
-def summary_from_parts(parts):
-    labels = [title for title, _ in parts if title != '正文' and not re.fullmatch(r'第 \d+ 页(?:（OCR）)?', title)]
-    if len(labels) >= 2:
-        headings = []
-        for label in dict.fromkeys(labels):
-            option = '包含：' + '、'.join([*headings, label])
-            if len(option) <= 180:
-                headings.append(label)
-            if len(headings) >= 4:
-                break
-        if headings:
-            return '包含：' + '、'.join(headings)
-    snippets = []
+def summary_from_parts(path, parts):
+    if not parts or not any(title != '正文' or text.strip() for title, text in parts):
+        return ''
+    suffix = path.suffix.lower()
+    kind = DOCUMENT_KINDS[suffix]
+    labels = []
+    for title, _ in parts:
+        title = ' '.join(title.split()).strip()
+        if title and title not in labels and title != '正文' and not re.fullmatch(r'第 \d+ 页(?:（OCR）)?', title):
+            labels.append(title)
+    entries = []
     for title, text in parts:
-        if title != '正文':
-            snippets.append(title)
-        for line in text.splitlines()[:25]:
-            line = ' '.join(line.split()).strip('|#- ')
-            if len(line) >= 12 and line not in snippets:
-                snippets.append(line)
-                break
-        if len('；'.join(snippets)) >= 170:
+        if suffix == '.xlsx' or not re.search(r'摘要|结论|要点|概要|\b(?:abstract|summary|conclusions?)\b', title, re.I):
+            continue
+        sentences = re.split(r'(?<=[。！？])\s*|(?<=[.!?])\s+|\r?\n', text)
+        entries.extend(' '.join(sentence.split()).strip('|#- ') for sentence in sentences)
+    finding = next((entry for entry in entries if 10 <= len(entry) <= 85), '')
+    brief = kind + ('，要点：' + finding if finding else '')
+    prefix = '，工作表：' if suffix == '.xlsx' else '，章节：'
+    headings = []
+    for label in labels:
+        if len(brief + prefix + '、'.join([*headings, label])) <= 180:
+            headings.append(label)
+        if len(headings) >= 4:
             break
-    return '；'.join(snippets)[:200]
+    if headings:
+        return brief + prefix + '、'.join(headings)
+    pages = [title for title, text in parts if text.strip() and re.fullmatch(r'第 \d+ 页(?:（OCR）)?', title)]
+    if pages:
+        return brief + '，可按页核对 ' + '、'.join(pages[:4])
+    return brief

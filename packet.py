@@ -13,6 +13,7 @@ import notes
 
 
 VERSION = 24
+FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -709,7 +710,7 @@ def prepare_file(db, value, clean, force=False):
         return failure['status'], None, None
     if row and row['fingerprint'] == fingerprint and not force:
         summary = db.execute('SELECT summary, method FROM packet_file_summaries WHERE fingerprint=?', (row['digest'],)).fetchone()
-        if summary:
+        if summary and summary['method'] == FILE_SUMMARY_METHOD:
             return 'cached', summary['summary'], summary['method']
     try:
         data = file_text.read_bytes(path)
@@ -718,16 +719,16 @@ def prepare_file(db, value, clean, force=False):
             return 'changed', None, None
         digest = hashlib.sha256(path.suffix.lower().encode() + b'\0' + data).hexdigest()
         summary = db.execute('SELECT summary, method FROM packet_file_summaries WHERE fingerprint=?', (digest,)).fetchone()
-        if summary and not force:
+        if summary and summary['method'] == FILE_SUMMARY_METHOD and not force:
             status, text, method = 'cached', summary['summary'], summary['method']
         else:
             parts = file_text.extract(path, data, preview=True)
-            text = clean(file_text.summary_from_parts(parts))
+            text = clean(file_text.summary_from_parts(path, parts))
             if not text:
                 with db:
                     db.execute('INSERT OR REPLACE INTO packet_file_failures VALUES(?,?,?)', (value, fingerprint, 'no_text'))
                 return 'no_text', None, None
-            method = 'extractive'
+            method = FILE_SUMMARY_METHOD
             status = 'built'
     except (OSError, ValueError):
         with db:
@@ -735,7 +736,7 @@ def prepare_file(db, value, clean, force=False):
         return 'unreadable', None, None
     with db:
         db.execute('INSERT INTO packet_file_summaries VALUES(?,?,?) ON CONFLICT(fingerprint) DO UPDATE SET '
-                   'summary=excluded.summary,method=excluded.method WHERE excluded.method=\'model\' OR packet_file_summaries.method<>\'model\'',
+                   'summary=excluded.summary,method=excluded.method',
                    (digest, text, method))
         db.execute('INSERT INTO packet_file_paths VALUES(?,?,?) ON CONFLICT(path) DO UPDATE SET '
                    'fingerprint=excluded.fingerprint,digest=excluded.digest', (value, fingerprint, digest))
@@ -746,7 +747,7 @@ def prepare_file(db, value, clean, force=False):
 def file_summary(db, value):
     row = db.execute('''SELECT p.fingerprint,s.summary,s.method FROM packet_file_paths p
                         JOIN packet_file_summaries s ON s.fingerprint=p.digest WHERE p.path=?''', (value,)).fetchone()
-    if not row:
+    if not row or row['method'] != FILE_SUMMARY_METHOD:
         return None
     try:
         st = Path(value).stat()
