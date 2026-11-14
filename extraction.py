@@ -83,7 +83,7 @@ def selected_answer(content):
     return 'User selected: ' + ' / '.join(choices) if choices else ''
 
 
-def selection_context(content):
+def selection_context(content, *, include_questions=True):
     selection = selected_answer(content)
     if not selection:
         return ''
@@ -97,7 +97,7 @@ def selection_context(content):
         choice = selected.get(question.get('id'))
         if not isinstance(choice, list):
             continue
-        if isinstance(question.get('question'), str):
+        if include_questions and isinstance(question.get('question'), str):
             prompts.append(question['question'])
         prompts.extend(option['description'] for option in question.get('options') or []
                        if isinstance(option, dict) and option.get('label') in choice
@@ -113,7 +113,8 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused
                              (sid, start, end if end is not None else 2**63-1)):
         text = visible(dict(row))
         if row['role'] == 'user' and row['is_system'] and (row['content'] or '').startswith('{'):
-            text = visible({'role': 'user', 'dialogue_text': selected_answer(row['content'])})
+            choice = selection_context(row['content'], include_questions=not outbound) if focused else selected_answer(row['content'])
+            text = visible({'role': 'user', 'dialogue_text': choice})
         if not text:
             continue
         if text.startswith(('<codex_internal_context', '<external_codex_apps_', '<environment_context>')):

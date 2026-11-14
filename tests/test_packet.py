@@ -377,15 +377,23 @@ class PacketTest(unittest.TestCase):
         sid = 'deepseek-harness:fictional-selection'
         self.archive_messages(sid, 'Atlas', [('user', json.dumps({
             'kind': 'answer_to_pending_question',
-            'questions': [{'id': 'a', 'options': [{'label': 'picked answer'}, {'label': 'unselected option'}]}],
+            'questions': [{'id': 'a', 'question':'Private prompt', 'options': [
+                {'label': 'picked answer','description':'Use the small room. <document_body>PRIVATE_BODY</document_body>'},
+                {'label': 'unselected option','description':'PRIVATE_UNSELECTED'}]},
+                {'id':'b','options':[{'label':'picked answer','description':'PRIVATE_OTHER_QUESTION'}]}],
             'answers': [{'id': 'a', 'selected': ['picked answer']}],
         })), ('assistant', 'Delivered [report](research/fictional-report.md).')])
         with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
             index.row_factory = sqlite3.Row
             index.execute("UPDATE messages SET is_system=1 WHERE ordinal=0")
             evidence = brain.extraction.transcript(index, sid, brain.visible, brain.packet.paths_in, brain.json_text)
+            handoff = brain.extraction.transcript(index,sid,brain.visible,brain.packet.paths_in,brain.json_text,
+                                                  focused=True,outbound=True)
         self.assertEqual(evidence[0]['text'], 'User selected: picked answer')
         self.assertEqual(evidence[1]['files'], ['research/fictional-report.md'])
+        self.assertEqual(handoff[0]['text'], 'User selected: picked answer · Use the small room.')
+        self.assertNotIn('PRIVATE',brain.json_text(handoff))
+        self.assertNotIn('Private prompt',brain.json_text(handoff))
 
     def test_model_extraction_retains_inline_and_line_anchored_file_refs(self):
         sid = 'codex:fictional-refs'
@@ -735,7 +743,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                 return brain.recall.evidence_package(self.db,index,project,question,brain.visible,
                     brain.packet.paths_in,brain.json_text,use_tags=False)
             result,_,_=package('What venue policy did Atlas choose?')
-            self.assertTrue(any(row['text']=='User selected: Go with the small room' for row in result['messages']))
+            self.assertTrue(any(row['text']=='User selected: Go with the small room · Two teams only'
+                                for row in result['messages']))
             result,evidence,_=package('What was the Atlas agenda version?')
         self.assertNotIn('PRIVATE_CURRENT_FILE',str(result))
         timeline=next(item for item in result['file_timelines'] if item['current'])
