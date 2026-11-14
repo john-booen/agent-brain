@@ -285,10 +285,45 @@ def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, 
     }
 
 
+def read_session_excerpt(session_id, start, limit, around=None):
+    try:
+        return read_session(session_id, start=start, limit=limit, around=around)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        path = DATA/'agentsview/sessions.db'
+        if not path.is_file():
+            raise
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as index:
+        index.row_factory = sqlite3.Row
+        index.execute('BEGIN')
+        meta = index.execute('''SELECT agent,ended_at,started_at,transcript_revision,file_path FROM sessions
+            WHERE id=? AND deleted_at IS NULL''',(session_id,)).fetchone()
+        if not meta:
+            raise ValueError('本机索引没有该会话')
+        meta = dict(meta)
+        query = "SELECT ordinal,role,timestamp,dialogue_text,content,is_system FROM messages WHERE session_id=? AND role IN ('user','assistant')"
+        if around is None:
+            rows = index.execute(query+' AND ordinal>=? ORDER BY ordinal LIMIT ?', (session_id,start,limit+1)).fetchall()
+            next_from = rows[limit]['ordinal'] if len(rows)>limit else None
+            rows = rows[:limit]
+        else:
+            before = min(3, (limit - 1) // 2)
+            after = min(3, limit - before - 1)
+            earlier = index.execute(query+' AND ordinal<? ORDER BY ordinal DESC LIMIT ?', (session_id,around,before)).fetchall()
+            later = index.execute(query+' AND ordinal>=? ORDER BY ordinal LIMIT ?', (session_id,around,after+2)).fetchall()
+            next_from = later[after+1]['ordinal'] if len(later)>after+1 else None
+            rows = [*reversed(earlier),*later[:after+1]]
+    messages = [{'ordinal':row['ordinal'],'role':row['role'],'time':row['timestamp'],'text':text}
+                for row in rows if (text := visible(dict(row)))]
+    return {'session_id':session_id, 'source':meta['agent'] or session_id.split(':')[0],
+            'time':meta['ended_at'] or meta['started_at'], 'revision':str(meta['transcript_revision'] or ''),
+            'path':source_path(meta), 'messages':messages, 'next_from':next_from, 'route':'local',
+            'status':'ok' if messages else '内容不全'}
+
+
 def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
     if around is not None and (start or text_offset):
         raise ValueError("Use around for a new lookup, or start and text_offset to continue")
-    result = read_session(session_id, start=start, limit=limit, around=around)
+    result = read_session_excerpt(session_id, start, limit, around)
     if around is None and not text_offset and not result["messages"]:
         # Tool-only entries can fill an archive page before dialogue filtering.
         revision = result.get("revision")
@@ -297,7 +332,7 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
             if cursor is None or cursor <= start:
                 break
             start = cursor
-            result = read_session(session_id, start=start, limit=limit)
+            result = read_session_excerpt(session_id, start, limit)
             if revision and result.get("revision") and revision != result["revision"]:
                 raise ValueError("会话更新了，请重新读取")
             if result["messages"]:

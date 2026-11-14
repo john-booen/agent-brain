@@ -1122,6 +1122,30 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                 index.execute("UPDATE sessions SET deleted_at='2026-01-01T00:00:00Z'")
             self.assertEqual(self.tool('search',query='glass compass')['status'],'没命中')
 
+    def test_get_session_falls_back_and_paginates_long_original_text(self):
+        sid = 'kimi-work:fictional-local-excerpt'
+        original = '保留第一版口径。' * 475
+        self.archive_messages(sid, 'Atlas', [('user','Use the original version.'),('assistant',original),
+                                             ('assistant','Internal output.'),('user','Next request.')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent','file_path','ended_at','deleted_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute('UPDATE messages SET ordinal=ordinal*3, is_system=ordinal=2')
+        with patch.object(brain,'archive',side_effect=RuntimeError('Query service unavailable')):
+            page = self.tool('get_session',session_id=sid,around=3,limit=2)
+            retrieved = []
+            for _ in range(20):
+                self.assertEqual(page['route'],'local')
+                self.assertLessEqual(brain.response_size(page),brain.QUERY_BYTES)
+                retrieved.extend(row['text'] for row in page['messages'] if row['ordinal']==3)
+                self.assertFalse(any(row['ordinal']==6 for row in page['messages']))
+                if 'next_text_offset' not in page:
+                    break
+                self.assertEqual(page['next_from'],3)
+                page = self.tool('get_session',session_id=sid,start=3,text_offset=page['next_text_offset'],limit=2)
+            self.assertEqual(''.join(retrieved),original)
+            self.assertEqual(self.tool('get_session',session_id=sid,start=6,limit=1)['messages'][0]['ordinal'],9)
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:
