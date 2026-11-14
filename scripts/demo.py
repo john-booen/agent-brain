@@ -27,8 +27,10 @@ def tool(child, name, arguments):
 
 
 def client(data):
+    env = {**os.environ, 'AGENT_BRAIN_DATA': data, 'AGENT_BRAIN_USAGE_ORIGIN': 'test'}
+    env.pop('AGENT_BRAIN_SOURCE', None)
     return subprocess.Popen([sys.executable, str(root / "brain.py"), "mcp"],
-                            env={**os.environ, "AGENT_BRAIN_DATA": data},
+                            env=env,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 
 
@@ -46,6 +48,12 @@ def run(data, name, arguments):
 with tempfile.TemporaryDirectory(prefix="agent-brain-demo-") as data:
     fixture = json.loads((root / "examples" / "demo.json").read_text())
     assert run(data, "log_work", {**fixture, "create_project": True})["written"]
+    assert run(data, 'log_work', {'project': fixture['project'], 'source': 'kimi-work',
+                                'summary': 'Prepared the handoff notes for the stage rehearsal.',
+                                'inputs': [{'text': 'Stage rehearsal starts Friday.'}]})['written']
     print("Codex → log_work")
+    print("Kimi demo client → log_work")
     print("Cowork demo client → get_project")
-    print(run(data, "get_project", {"project": fixture["project"]})["card"])
+    result = run(data, "get_project", {"project": fixture["project"]})
+    assert result.get('records') == 2
+    print(result["card"])
