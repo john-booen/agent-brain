@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 4
+REVISION = 5
 MAX_INPUT_BYTES = 60_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -89,7 +89,7 @@ def transcript(index, sid, visible, paths_in, encode):
         text = re.sub(r'(?ms)^\[(Thinking|Tool result|Tool output)\].*?^\[/\1\][ \t]*\n?', '', text)
         text = re.sub(r'(?ms)^\x60{3}(?:[\w-]*)[ \t]*\n.*?^\x60{3}[^\S\n]*$', '[code omitted]', text)
         limit = 1400 if row['role'] == 'user' else 700
-        if row['role'] == 'assistant' and not paths and len(text) < 100:
+        if row['role'] == 'assistant' and not paths and len(text) < 45:
             continue
         entry = {'ordinal': row['ordinal'], 'role': row['role'], 'text': text_excerpt(text, limit)}
         if paths:
@@ -158,7 +158,9 @@ def checked_result(response, evidence, valid_ids, clean):
                     if isinstance(fact.get('description'), str):
                         checked['description'] = clean(fact['description'])[:180]
                     confirmation = fact.get('confirmation')
-                    if type(confirmation) is int and confirmation > ordinal and evidence.get(confirmation, {}).get('role') == 'user':
+                    if (type(confirmation) is int and confirmation > ordinal and evidence.get(confirmation, {}).get('role') == 'user'
+                            and (confirmation - ordinal <= 10 or
+                                 (checked.get('path') and Path(checked['path']).name in evidence[confirmation].get('text', '')))):
                         checked['confirmation'] = confirmation
                     elif confirmation is not None:
                         rejected += 1
@@ -187,7 +189,7 @@ def candidates(db, sid, dialogue):
         LEFT JOIN project_redirects r ON r.old_id=p.id WHERE r.old_id IS NULL GROUP BY p.id ORDER BY last DESC""", (sid,))
     text = dialogue.casefold()
     return [{'id': r['id'], 'name': r['name']} for r in rows
-            if r['last'] or (len(r['name']) > 2 and r['name'].casefold() in text)][:40]
+            if r['last'] or (len(r['name']) > 2 and r['name'].casefold() in text)][:30]
 
 
 def model_source_health(db):
