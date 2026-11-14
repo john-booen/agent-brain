@@ -1116,25 +1116,26 @@ def register_path_relocation(db, old, new, reason):
     return {'registered': True}
 
 
-def delivery_paths(session_id, ordinal):
+def archived_file_reference(session_id, ordinal):
     archive = DATA / 'agentsview/sessions.db'
     if not archive.is_file():
-        return [], None
+        return [], None, None
     with closing(sqlite3.connect(archive.as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
         index.row_factory = sqlite3.Row
         session = index.execute('SELECT cwd FROM sessions WHERE id=?', (session_id,)).fetchone()
         if session is None:
-            return [], None
+            return [], None, None
         rows = extraction.transcript(index, session_id, visible, packet.paths_in, json_text,
                                      focused=True, start=ordinal, end=ordinal)
-    if not rows or rows[0]['role'] != 'assistant':
-        return [], None
-    return rows[0].get('files', []), session['cwd']
+    if not rows:
+        return [], None, None
+    return rows[0].get('files', []), session['cwd'], rows[0]['role']
 
 
 def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
                       session_id=None, ordinal=None, expected_sha256=None):
     relocated = False
+    source_role = None
     if section and page is not None:
         raise ValueError('每次请选择章节或页码')
     if expected_sha256 is not None and not re.fullmatch(r'[0-9a-fA-F]{64}',expected_sha256):
@@ -1149,7 +1150,12 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         data, _ = packet.load(db, DATA, pid, visible, clean, lazy=True)
         entries = [item for key in ('inputs', 'deliverables') for item in data[key] if item.get('path')]
         if session_id is not None:
-            references, cwd = delivery_paths(session_id, ordinal)
+            references, cwd, source_role = archived_file_reference(session_id, ordinal)
+            if source_role == 'user':
+                # A user message is evidence for materials supplied in that message.
+                entries = [item for item in data['inputs'] if item.get('path')
+                           and item['ref']['session_id']==session_id and item['ref']['ordinal']==ordinal
+                           and not item['ref'].get('pending')]
             copies = {item['original_path']: item['path'] for item in entries if item.get('original_path')}
             source = [(value, resolved) for value in references
                       if path in ((resolved := packet.available_path(value,cwd)), copies.get(resolved))
@@ -1175,7 +1181,7 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
                 if verified_matches:
                     matches = verified_matches
             if len(matches) != 1:
-                raise ValueError('该引用未指向唯一的登记文件，请核对交付消息或使用登记的完整路径')
+                raise ValueError('该引用未指向唯一的登记文件，请核对原始消息或使用登记的完整路径')
             path = matches.pop()
             relocated = copies.get(resolved) == path
         elif Path(path).name == path:
@@ -1195,7 +1201,7 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
     if not allowed:
         raise ValueError('只可读取资料袋中已登记的原始资料或交付文件')
     try:
-        file = file_text.document_path(path, delivered_json=session_id is not None)
+        file = file_text.document_path(path, delivered_json=source_role=='assistant')
         if file.is_relative_to(DATA) or file.is_relative_to(REPO):
             raise ValueError('不能通过资料袋读取共享大脑内部文件')
         if file.suffix.lower() == '.json' and not file_text.local_file_available(file.stat()):

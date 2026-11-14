@@ -287,6 +287,31 @@ fs.stat = async (file, ...args) => {
         with self.assertRaisesRegex(ValueError,'引用'):
             self.tool('read_file',**args,ordinal=1)
 
+    def test_read_file_uses_the_original_user_attachment_reference(self):
+        attachment = self.root / 'input' / 'notes.md'
+        deliverable = self.root / 'output' / 'notes.md'
+        for path in (attachment, deliverable):
+            path.parent.mkdir()
+            path.write_text(f'# Notes\nFrom {path.parent.name}.')
+        sid = 'codex:fictional-original-attachment'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', f'Use <attachment>{json.dumps({"path":str(attachment)})}</attachment> for Atlas.'),
+            ('assistant', f'Delivered the revised notes: [{deliverable.name}]({deliverable}).'),
+            ('user', f'Please continue working from [{deliverable.name}]({deliverable}).'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  summary='Record the inputs and deliverable.', session_id=sid,
+                  inputs=[{'path':str(attachment),'ordinal':0}],
+                  deliverables=[{'path':str(deliverable),'ordinal':1,'task':'Revised notes'}])
+        args = {'project':'Atlas','path':'notes.md','session_id':sid}
+        self.assertIn('From input.', self.tool('read_file', **args, ordinal=0)['text'])
+        self.assertIn('From output.', self.tool('read_file', **args, ordinal=1)['text'])
+        with self.assertRaisesRegex(ValueError, '引用'):
+            self.tool('read_file', **args, ordinal=2)
+        attachment.unlink()
+        with self.assertRaisesRegex(ValueError, '本机不可用'):
+            self.tool('read_file', **args, ordinal=0)
+
     def test_read_file_follows_a_registered_copy_from_the_original_delivery(self):
         original = self.root / 'old' / 'report.md'
         copy = self.root / 'copy' / 'report.md'
