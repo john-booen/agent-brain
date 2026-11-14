@@ -22,7 +22,9 @@ excerpt","kind":"answer|deliverable|rule|confirmed","path":"omit or use a file r
 the same message"}],"uncertain":"what remains unclear, if anything"}.
 Use up to four claims totalling 300 Chinese characters or 150 English words. Identify the task and latest
 usable delivery, distinguish approval from a revision request, and use the user's own words for their rules.
-For a confirmed item, only cite the user's explicit acceptance with a reference to that version.
+Keep one assertion per reference; use separate claims for a delivery and a later user request.
+For a confirmed item, quote the user's explicit acceptance and include "delivery_ref" for the
+earlier assistant handoff of that exact version. For a file use its path from that handoff.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
 An assistant message with inline_sections has that many sections in the original chat. Their text is
@@ -478,6 +480,11 @@ def bounded(result, encode, count):
     def fits():
         value = encode(result)
         return count(value) <= 800 if count else len(value.encode()) <= 800
+    # Preserve the claims and their locators when the additional source quotes fill the response.
+    if result.get('route')=='Eco' and result.get('evidence') and not fits():
+        result = {**result, 'evidence': [
+            {**claim, 'quote': extraction.text_excerpt(claim['quote'], 36)} if claim.get('quote') else claim
+            for claim in result.get('evidence', [])]}
     while not fits() and result.get('evidence'):
         result['evidence'].pop()
     if not fits():
@@ -619,8 +626,39 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
     return result
 
 
+def confirmation_source(item, source, evidence):
+    ref = item.get('delivery_ref')
+    delivery = evidence.get(ref) if isinstance(ref,str) else None
+    if (not delivery or delivery['role']!='assistant' or delivery['session_id']!=source['session_id']
+            or delivery['ordinal']>=source['ordinal']):
+        return None
+    text = source['text']
+    english = re.match(r'\s*(?:I (?:approve|accept)\b|(?:approved|accepted)[.!\s]*$)',text,re.I)
+    negative = re.search(r'\b(?:not|never|reject\w*|draft|revise\w*|change\w*|after|once|if|yet|pending)\b',text,re.I)
+    conditional = re.search(r'如果|等我|等你|先等|没确认|没通过|暂不|再看|前提|才定',text)
+    if conditional or not (packet.confirms_delivery(text) or english and not negative):
+        return None
+    attachments = delivery.get('files', [])
+    path = item.get('path')
+    intervening = any(row['session_id']==source['session_id'] and row['role']=='assistant'
+                      and delivery['ordinal']<row['ordinal']<source['ordinal']
+                      and (row.get('files') or row.get('inline_sections')) for row in evidence.values())
+    near = source['ordinal'] - delivery['ordinal'] <= 4 and not intervening
+    if path:
+        if path not in attachments:
+            return None
+        named = path in text or (Path(path).name in text and
+                                sum(Path(p).name==Path(path).name for p in attachments)==1)
+        same_name_versions = any(row['session_id']==source['session_id'] and row['role']=='assistant'
+                                 and delivery['ordinal']<row['ordinal']<source['ordinal']
+                                 and any(Path(p).name==Path(path).name for p in row.get('files', []))
+                                 for row in evidence.values())
+        return delivery if named and not same_name_versions or near and len(attachments)==1 else None
+    return delivery if not attachments and delivery.get('inline_sections') and near else None
+
+
 def checked_claims(raw, evidence):
-    if not isinstance(raw.get('claims'), list):
+    if not isinstance(raw, dict) or not isinstance(raw.get('claims'), list):
         return []
     output = []
     for item in raw['claims'][:4]:
@@ -630,7 +668,7 @@ def checked_claims(raw, evidence):
         if not all(isinstance(a, str) and a.strip() for a in (ref, quote, text, kind)):
             continue
         source = evidence.get(ref)
-        if not source or (len(quote.strip()) < 4 or quote not in source['text']):
+        if not source or len(quote.strip()) < (2 if kind=='confirmed' else 4) or quote not in source['text']:
             continue
         if kind not in {'answer', 'deliverable', 'rule', 'confirmed'}:
             continue
@@ -638,21 +676,20 @@ def checked_claims(raw, evidence):
                 or kind in {'rule', 'confirmed'} and source['role'] != 'user'):
             continue
         path = item.get('path')
-        if path is not None and path not in source.get('files', []):
+        if path is not None and not isinstance(path,str):
             continue
         if kind == 'confirmed':
-            # Only annotate strong explicit acceptance. Keep the exact wording auditable.
-            if not re.search(r'定稿|定为|就用|采用|通过|accept|approv|final', quote, re.I):
+            approval = confirmation_source(item, source, evidence)
+            if not approval:
                 continue
-            if re.search(r'改成|再改|不通过|不接受|草稿|please revise|not approved', quote, re.I):
-                continue
-            if not path and not any(ch in quote for ch in ('这版', '该版', '此版', 'version')):
-                continue
-        entry = {'text': text[:155], 'kind': kind, 'session_id': source['session_id'], 'ordinal': source['ordinal']}
+        elif path is not None and path not in source.get('files', []):
+            continue
+        entry = {'text': text[:155], 'kind': kind, 'session_id': source['session_id'], 'ordinal': source['ordinal'],
+                 'quote': extraction.text_excerpt(quote, 86)}
         if path:
             entry['file'] = Path(path).name[:145]
         if kind == 'confirmed':
-            entry['quote'] = quote[:60]
+            entry['delivery_ordinal'] = approval['ordinal']
         output.append(entry)
     return output
 

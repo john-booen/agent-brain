@@ -543,6 +543,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         with patch.object(brain, 'model', side_effect=gateway) as model:
             answer = self.tool('recall', project='Atlas', question='Which report is done?')
             self.assertEqual((answer['level'], len(answer['evidence'])), (1, 2))
+            self.assertEqual([claim['quote'] for claim in answer['evidence']], ['Delivered','plain-text daily schedule'])
             self.assertTrue(self.tool('recall', project='Atlas', question='Which report is done?')['cached'])
             self.assertEqual(model.call_count, 1)
             local = self.tool('recall', project='Atlas', question='Which report is done?',local_only=True)
@@ -561,6 +562,35 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
         self.assertEqual((answer['level'],answer['route']), (3,'local'))
         self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
+
+    def test_recall_confirmation_needs_user_approval_and_the_same_delivery(self):
+        sid = 'codex:fictional-approval'
+        report = '/tmp/atlas.md'
+        def source(ordinal, role, text, **extra):
+            return {'ordinal':ordinal,'role':role,'text':text,'session_id':sid,**extra}
+
+        approval = '确认。'
+        evidence = {
+            '1:4':source(4,'assistant','Delivered the Atlas report.',files=[report]),
+            '1:5':source(5,'user',approval),
+            '1:7':source(7,'user','就用这版作为终版，再补充价格。'),
+            '1:8':source(8,'assistant','Updated the Atlas report.',files=[report]),
+            '1:9':source(9,'user','这份 atlas.md 作为终版。'),
+            '1:10':{**source(10,'assistant','Delivered a separate report.',files=[report]),'session_id':'kimi-work:elsewhere'},
+        }
+        base = {'ref':'1:5','quote':approval,'kind':'confirmed','text':'Approved the Atlas report.',
+                'path':report,'delivery_ref':'1:4'}
+        verify = brain.recall.checked_claims
+        result = verify({'claims':[base]},evidence)
+        self.assertEqual([(x['ordinal'],x['delivery_ordinal'],x['file'],x['quote']) for x in result],
+                         [(5,4,'atlas.md',approval)])
+        for overrides in ({'delivery_ref':None}, {'delivery_ref':'1:10'}, {'path':'/tmp/other.md'},
+                          {'ref':'1:7','quote':'就用这版作为终版'},
+                          {'ref':'1:9','quote':'这份 atlas.md 作为终版'}):
+            self.assertEqual(verify({'claims':[{**base,**overrides}]},evidence),[])
+        later = verify({'claims':[{**base,'ref':'1:9','quote':'这份 atlas.md 作为终版','delivery_ref':'1:8'}]},evidence)
+        self.assertEqual(later[0]['delivery_ordinal'],8)
+        self.assertEqual(verify([],evidence),[])
 
     def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
