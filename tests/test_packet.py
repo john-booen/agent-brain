@@ -1063,6 +1063,18 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertIn('Old model paraphrase.',prior)
         self.assertNotIn('Wrong amount',body)
 
+    def test_local_excerpt_preserves_a_citation_cut_by_the_length_limit(self):
+        lead = 'The collector runs every five minutes. See '
+        citation = 'codex:12345678-1111-2222-3333-444444444444（第 16 条消息）'
+        text = lead + citation + '. Extra context follows. ' * 6
+        clipped = brain.recall.local_text_excerpt(text, 100)
+        self.assertIn('The collector runs every five minutes.', clipped)
+        self.assertIn('codex:12345678-1111-2222-3333-444444444444（第 16 条', clipped)
+        self.assertLessEqual(len(clipped), len(brain.extraction.text_excerpt(text, 100)))
+        self.assertEqual(brain.recall.local_text_excerpt(text, len(text)), text)
+        other = lead + 'ordinary details. ' * 15
+        self.assertEqual(brain.recall.local_text_excerpt(other, 100), brain.extraction.text_excerpt(other, 100))
+
     def test_local_recall_reads_registered_task_identifiers_from_original_messages(self):
         sid = 'codex:fictional-task-identifier'
         good = self.root / 'old' / 'README.md'

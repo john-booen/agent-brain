@@ -750,6 +750,29 @@ def named_task_evidence(archive, question, visible, paths_in, encode, items, fir
     return result
 
 
+ARCHIVED_MESSAGE_REF = re.compile(
+    r"(?<![\w:-])(?:codex|cowork):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+    r"\x60?\s*(?:#\s*[0-9]+|[（(]?\s*第\s*[0-9]+\s*条)",
+    re.IGNORECASE,
+)
+
+
+def local_text_excerpt(text, limit):
+    excerpt = extraction.text_excerpt(text, limit)
+    if len(text) <= limit:
+        return excerpt
+    head = limit * 2 // 3
+    tail = len(text) - (limit - head)
+    for match in ARCHIVED_MESSAGE_REF.finditer(text):
+        start, finish = match.span()
+        if start < head < finish or start < tail < finish:
+            keep = limit - (finish - start)
+            if keep >= 16:
+                # Preserve the literal archive reference so it can be checked separately.
+                return text[:min(keep, start)] + '\n[…]\n' + match.group()
+    return excerpt
+
+
 def local_evidence(evidence, encode, count, offset=0, reason=''):
     rows=list(evidence.values())
     by_session = defaultdict(list)
@@ -801,7 +824,7 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
         if row.get('later_version') and later.get('reported_format_quotes'):
             # The version note already carries exact format quotes from both deliveries.
             excerpt_limit = 28
-        item['text']=extraction.text_excerpt(row['text'],excerpt_limit)
+        item['text']=local_text_excerpt(row['text'],excerpt_limit)
         sessions = {**result['sessions'],ref:sid}
         if row.get('later_version'):
             sessions[later_ref]=later_sid
