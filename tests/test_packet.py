@@ -250,6 +250,20 @@ class PacketTest(unittest.TestCase):
         self.assertIn('用户确认', self.tool('get_project', project='Atlas', section='deliverables')['card'])
         self.assertIn('Use the conservative range', self.tool('get_project', project='Atlas', section='rules')['card'])
 
+    def test_model_extracts_selected_answer_without_passing_question_options(self):
+        sid = 'deepseek-harness:fictional-selection'
+        self.archive_messages(sid, 'Atlas', [('user', json.dumps({
+            'kind': 'answer_to_pending_question',
+            'questions': [{'id': 'a', 'options': [{'label': 'picked answer'}, {'label': 'unselected option'}]}],
+            'answers': [{'id': 'a', 'selected': ['picked answer']}],
+        })), ('assistant', 'Delivered [report](research/fictional-report.md).')])
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            index.row_factory = sqlite3.Row
+            index.execute("UPDATE messages SET is_system=1 WHERE ordinal=0")
+            evidence = brain.extraction.transcript(index, sid, brain.visible, brain.packet.paths_in, brain.json_text)
+        self.assertEqual(evidence[0]['text'], 'User selected: picked answer')
+        self.assertEqual(evidence[1]['files'], ['research/fictional-report.md'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

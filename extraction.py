@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 1
+REVISION = 2
 MAX_INPUT_BYTES = 60_000
 ECO_URL = 'http://127.0.0.1:3425/v1'
 ECO_MODEL = 'opendesign/deepseek-v4.1-flash-eco'
@@ -48,15 +48,32 @@ def text_excerpt(text, limit):
     return text[:head] + '\n[…]\n' + text[-(limit - head):]
 
 
+def selected_answer(content):
+    if '"answer_to_pending_question"' not in content[:128]:
+        return ''
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        return ''
+    if not isinstance(value, dict) or value.get('kind') != 'answer_to_pending_question':
+        return ''
+    choices = [label for answer in (value.get('answers') or []) if isinstance(answer, dict)
+               for label in (answer.get('selected') or []) if isinstance(label, str)]
+    return 'User selected: ' + ' / '.join(choices) if choices else ''
+
+
 def transcript(index, sid, visible, paths_in, encode):
     messages = []
     for row in index.execute("""SELECT ordinal,role,dialogue_text,content,is_system,timestamp FROM messages
-                               WHERE session_id=? AND role IN ('user','assistant') AND is_system=0 ORDER BY ordinal""", (sid,)):
+                               WHERE session_id=? AND role IN ('user','assistant') ORDER BY ordinal""", (sid,)):
         text = visible(dict(row))
+        if row['role'] == 'user' and row['is_system'] and (row['content'] or '').startswith('{'):
+            text = visible({'role': 'user', 'dialogue_text': selected_answer(row['content'])})
         if not text:
             continue
         # Keep ordinary turn text and file references. Attachments and tool contents are read locally.
-        paths = list(dict.fromkeys(paths_in(text)))[:12]
+        links = re.findall(r'\]\(<?([^<>\r\n]+?\.[a-zA-Z0-9]{1,6})>?\)', text)
+        paths = list(dict.fromkeys([*paths_in(text), *(path for path in links if '://' not in path)]))[:12]
         text = re.sub(r'<(attachment|file_contents|document_content|tool_result|tool_output)\b[^>]*>.*?</\1>',
                       '', text, flags=re.I | re.S)
         text = re.sub(r'(?ms)^\[(Thinking|Tool result|Tool output)\].*?^\[/\1\][ \t]*\n?', '', text)
