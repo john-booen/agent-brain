@@ -22,6 +22,7 @@ import file_text
 import packet
 import extraction
 import usage
+import health
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -353,11 +354,11 @@ def source_status():
 
 def packet_coverage():
     try:
-        report = json.loads((DATA / "coverage.json").read_text())
-    except FileNotFoundError:
-        return {}
+        report = health.read_json(DATA / "coverage.json")
     except (OSError, ValueError):
         return {"coverage": "采集状态无法读取"}
+    if report.get('exit'):
+        return {'coverage': '原文索引可能过期（最近采集失败）'}
     refresh = report.get("packetRefresh") or {}
     if refresh.get("status") == "failed":
         return {"coverage": "资料袋可能过期（最近刷新失败）"}
@@ -1556,6 +1557,8 @@ def main():
     commands.add_parser("mcp")
     commands.add_parser("list-projects")
     commands.add_parser("weekly-report", help="Generate private reports for the last complete week")
+    health_run = commands.add_parser('health', help='Check local index, packet refresh, model jobs and SQLite')
+    health_run.add_argument('--backup', action='store_true')
     run = commands.add_parser("tool")
     run.add_argument("name", choices=TOOLS)
     run.add_argument("arguments", nargs="?", default="{}")
@@ -1618,6 +1621,13 @@ def main():
             print(json_text(call_tool(db, args.name, json.loads(args.arguments))))
         elif args.command == "weekly-report":
             print(json_text({"directory": str(usage.weekly(db, DATA))}))
+        elif args.command == 'health':
+            status = health.write_report(db, DATA)
+            if args.backup and status['sqlite'] == 'ok':
+                status['backup'] = str(health.backup(db, DATA))
+            print(json_text(status))
+            if status['sqlite'] != 'ok':
+                return 1
         elif args.command == 'build-packets':
             result = build_packets(db, args)
             print(json_text(result), flush=True)

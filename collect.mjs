@@ -150,10 +150,33 @@ async function main() {
   if (!relation || (relation !== '..' && !relation.startsWith('..' + sep) && !relation.startsWith(sep))) {
     throw new Error('AGENT_BRAIN_DATA must be outside the code repository');
   }
-  const lock = await fs.open(join(data, '.collect.lock'), 'wx', 0o600);
+  const lockPath = join(data, '.collect.lock');
+  const lock = await fs.open(lockPath, 'wx', 0o600).catch(async error => {
+    if (error.code !== 'EEXIST') throw error;
+    const old = await fs.stat(lockPath);
+    if (Date.now() - old.mtimeMs < 30 * 60 * 1000) throw error;
+    const pid = Number(await fs.readFile(lockPath, 'utf8'));
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      try { process.kill(pid, 0); throw error; }
+      catch (check) { if (check.code !== 'ESRCH') throw check; }
+    }
+    if ((await fs.stat(lockPath)).ino !== old.ino) throw error;
+    await fs.unlink(lockPath);
+    return fs.open(lockPath, 'wx', 0o600);
+  });
   await lock.writeFile(String(process.pid));
   try { await collect(); }
-  finally { await lock.close(); await fs.unlink(join(data, '.collect.lock')); }
+  catch (error) {
+    const prior = await fs.readFile(coveragePath, 'utf8').then(JSON.parse).catch(() => ({}));
+    prior.exit = 1;
+    prior.completedAt = new Date().toISOString();
+    delete prior.updatingSince;
+    await writeAtomic(coveragePath, JSON.stringify(prior, null, 2));
+    await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'collector', status: 'failed',
+      at: prior.completedAt, reason: error.code || error.message }) + '\n', { mode: 0o600 });
+    throw error;
+  }
+  finally { await lock.close(); await fs.unlink(lockPath); }
 }
 
 async function collect() {
@@ -167,7 +190,7 @@ async function collect() {
     return {};
   });
   const report = { startedAt, sources: { ...priorReport.sources }, packetRefresh: priorReport.packetRefresh,
-    weeklyGeneratedOn: priorReport.weeklyGeneratedOn };
+    weeklyGeneratedOn: priorReport.weeklyGeneratedOn, lastHealthCheck: priorReport.lastHealthCheck };
   const previous = await fs.readFile(manifestPath, 'utf8').then(JSON.parse).catch(error => {
     if (error.code !== 'ENOENT') throw error;
     return {};
@@ -309,6 +332,8 @@ async function collect() {
   await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
   if (report.exit) {
     process.exitCode = 1;
+    await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'collector', status: 'failed',
+      at: report.completedAt, exit: report.exit }) + '\n', { mode: 0o600 });
   } else if (packetPython) {
     let error;
     try {
@@ -320,6 +345,15 @@ async function collect() {
     if (error) process.exitCode = 1;
     await reportRefresh(report, priorReport.packetRefresh, error ? 'failed' : 'ok', error);
     const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' }).format(new Date());
+    if (process.env.AGENT_BRAIN_DAILY_HEALTH === '1' && priorReport.lastHealthCheck !== day) {
+      let failure;
+      try { failure = await localTask(['health', '--backup']); }
+      catch (error) { failure = error.code || 'spawn error'; }
+      if (!failure) report.lastHealthCheck = day;
+      else process.exitCode = 1;
+      await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'daily_health', day, status: failure ? 'failed' : 'ok' }) + '\n');
+      await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
+    }
     if (process.env.AGENT_BRAIN_WEEKLY === '1' && priorReport.weeklyGeneratedOn !== day &&
         new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date()) === 'Mon') {
       let failure;

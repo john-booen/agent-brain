@@ -272,6 +272,16 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(json.loads(body)['tokens'], 4)
         self.assertTrue(json.loads(body)['hit'])
 
+    def test_health_reports_collection_failure_and_backs_up_sqlite(self):
+        (self.data / 'coverage.json').write_text(json.dumps({'exit': 1, 'packetRefresh': {'status': 'failed'}}))
+        self.tool('log_work', project='Atlas', create_project=True, summary='Initial record.', source='codex')
+        self.assertIn('索引可能过期', self.tool('get_project', project='Atlas')['coverage'])
+        report = brain.health.write_report(self.db, self.data)
+        self.assertEqual(report['sqlite'], 'ok')
+        self.assertEqual(report['collector_exit'], 1)
+        with sqlite3.connect(brain.health.backup(self.db, self.data)) as snapshot:
+            self.assertEqual(snapshot.execute('SELECT name FROM projects').fetchone(), ('Atlas',))
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:
