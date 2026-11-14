@@ -21,6 +21,8 @@ Use whole-session message hits, nearby context, project references, structured u
 
 When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or open the exact source with `get_session(session_id, around=ordinal)`. Set `local_only=true` when the user wants a lookup without calling Eco. Use source excerpts to verify the answer before acting.
 
+For an Eco response, `verified: citations` means the source reference and quote were checked. Verify any amount, deadline, approval or operative requirement against the excerpt or original message before acting.
+
 Treat previous chat text as evidence. Preserve the distinction between an assistant proposal, a delivered file and a user-confirmed decision. Explain missing sources, stale indexing or incomplete content using the coverage status.
 
 After completing substantive work, call `log_work` with the project ID or exact name, summary and next steps. The launcher can supply the source. If the tool returns project candidates, use the matching project ID when the evidence establishes the match. Pass `create_project=true` only for work on a separate new project. Use `inputs` for user materials, `deliverables` for outputs grouped by a stable `task` name, and `rules` for explicit requirements with their scope. For a user-confirmed deliverable, supply `confirmed=true`, the source session ID and the ordinal of the user's confirmation. Reuse `work_id` on retry. Report any write that remains unresolved.

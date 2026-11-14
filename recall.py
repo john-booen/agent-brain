@@ -524,6 +524,9 @@ def local_tags(db, sessions, question):
 
 
 def bounded(result, encode, count):
+    if result.get('route')=='Eco' and result.get('evidence'):
+        result = {**result, 'verified':'citations'}
+
     def fits():
         value = encode(result)
         return count(value) <= 800 if count else len(value.encode()) <= 800
@@ -992,7 +995,7 @@ def write_index(db, directory, pid, name):
                                                (json.dumps(sorted(sessions)),)))
         except (OSError, sqlite3.Error):
             pass
-    body += ['', '## 深查核实', '']
+    citations, paraphrases = [], []
     for checked in checks:
         for fact in checked.get('evidence', []):
             if fact.get('kind')=='confirmed':
@@ -1000,7 +1003,16 @@ def write_index(db, directory, pid, name):
                 stored = checked.get('approval_revisions', {})
                 if sid not in stored or sid not in revisions or stored[sid]!=revisions[sid]:
                     continue
-            body.append(f'- {fact["text"]} · {fact["session_id"]}#{fact["ordinal"]}')
+            ref = f'{fact["session_id"]}#{fact["ordinal"]}'
+            if quote := fact.get('quote'):
+                excerpt = ' '.join(quote.split())
+                citations.append(f'- {excerpt} · {ref}')
+            else:
+                summary = ' '.join(fact['text'].split())
+                paraphrases.append(f'- {summary} · {ref}')
+    body += ['', '## 深查原文摘录', '', *dict.fromkeys(citations)]
+    if paraphrases:
+        body += ['', '## 待复核的历史转述', '', *dict.fromkeys(paraphrases)]
     folder = directory / 'projects' / pid
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     with NamedTemporaryFile(mode='w', dir=folder, delete=False) as temp:

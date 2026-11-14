@@ -874,6 +874,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
              'file':'报告.md','quote':'这是一段较长的原始交付说明。'*8}
             for n in range(4)]}
         compact = brain.recall.bounded(answer, brain.json_text, None)
+        self.assertEqual(compact['verified'], 'citations')
         self.assertEqual([item['ordinal'] for item in compact['evidence']], list(range(4)))
         self.assertEqual(compact['uncertain'], answer['uncertain'])
         self.assertTrue(all('quote' in item for item in answer['evidence']))
@@ -951,7 +952,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             initial = self.tool('recall',**args)
             self.assertEqual(initial['evidence'][0]['delivery_ordinal'],0)
             self.assertTrue(self.tool('recall',**args)['cached'])
-            self.assertIn('Approved.',index_file.read_text())
+            self.assertIn(approval,index_file.read_text())
+            self.assertNotIn('Approved.',index_file.read_text())
             with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
                 newer = f'Replaced the report at [{file}]({file}).'
                 index.execute('UPDATE messages SET content=?,dialogue_text=? WHERE session_id=? AND ordinal=1',(newer,newer,sid))
@@ -959,9 +961,25 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             result = self.tool('recall',**args)
             self.assertEqual(result['route'],'local')
             self.assertEqual(eco_call.call_count,2)
-            self.assertNotIn('Approved.',index_file.read_text())
+            self.assertNotIn(approval,index_file.read_text())
         validation = [json.loads(line) for line in (self.data/'recall_validation.jsonl').read_text().splitlines()]
         self.assertEqual(validation[-1]['rejected'],{'confirmation':1})
+
+    def test_recall_index_keeps_quoted_evidence_and_marks_legacy_paraphrases(self):
+        pid = self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                        summary='Review project rules.')['project_id']
+        base = {'kind':'answer','session_id':'codex:fictional-citation','ordinal':2}
+        for fingerprint, evidence in (
+                ('legacy', {**base,'text':'Old model paraphrase.'}),
+                ('new', {**base,'text':'Wrong amount 5,000.', 'quote':'Use 4,000.'})):
+            self.db.execute('INSERT INTO recall_answers VALUES(?,?,?,?)',
+                            (fingerprint,pid,'2026-01-01',json.dumps({'evidence':[evidence]})))
+        brain.recall.write_index(self.db,self.data,pid,'Atlas')
+        body = (self.data/'projects'/pid/'recall.md').read_text()
+        excerpts, prior = body.split('## 待复核的历史转述')
+        self.assertIn('Use 4,000.',excerpts)
+        self.assertIn('Old model paraphrase.',prior)
+        self.assertNotIn('Wrong amount',body)
 
     def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
