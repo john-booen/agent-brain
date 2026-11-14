@@ -1304,6 +1304,41 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         with self.assertRaisesRegex(ValueError,'超出'):
             self.tool('read_file',**args,page=3)
 
+    def test_read_file_reads_registered_json_by_delivery_reference(self):
+        result = self.root / 'measurements.json'
+        result.write_text('{"scope":"test data","runs":[{"value":1.234567890123456789e-25}]}')
+        unregistered = self.root / 'extra.json'
+        unregistered.write_text('{"scope":"Unregistered result"}')
+        settings = self.root / 'config.json'
+        settings.write_text('{"scope":"Client configuration"}')
+        sid = 'codex:fictional-structured-result'
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', f'Delivered [results]({result}) and [extra]({unregistered}). Related [settings]({settings}).'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  summary='Deliver the result', session_id=sid,
+                  deliverables=[{'path':str(result),'task':'Measurements','ordinal':0}],
+                  inputs=[{'path':str(settings),'ordinal':0}])
+        args = {'project':'Atlas','path':result.name,'session_id':sid,'ordinal':0}
+        data = self.tool('read_file', **args, section='runs')
+        self.assertIn('1.234567890123456789e-25', data['text'])
+        self.assertNotIn('test data', data['text'])
+        self.assertEqual(data['sha256'], hashlib.sha256(result.read_bytes()).hexdigest())
+        with self.assertRaisesRegex(ValueError, '原交付'):
+            self.tool('read_file', project='Atlas', path=result.name)
+        with self.assertRaisesRegex(ValueError, '登记'):
+            self.tool('read_file', **{**args,'path':unregistered.name})
+        with self.assertRaisesRegex(ValueError, '客户端配置'):
+            self.tool('read_file', **{**args,'path':settings.name})
+        with self.assertRaisesRegex(ValueError, '顶层字段'):
+            self.tool('read_file', **args, section='value')
+        result.write_text('{"runs":[{"accessToken":["test-secret"]}],"scope":"test data"}')
+        with self.assertRaisesRegex(ValueError, '结构化凭据'):
+            self.tool('read_file', **args, section='scope')
+        result.write_text('{"runs":[NaN]}')
+        with self.assertRaisesRegex(ValueError, '非标准数字'):
+            self.tool('read_file', **args)
+
     def test_file_summary_uses_the_outline_and_explicit_takeaway(self):
         path = self.root / 'rehearsal.md'
         path.write_text('Introduction text that should not appear as a takeaway.\n'

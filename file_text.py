@@ -1,5 +1,6 @@
 """Read local project documents without opening the original in an editor."""
 import io
+import json
 import os
 import re
 import shutil
@@ -27,9 +28,12 @@ R_STRICT = "{http://purl.oclc.org/ooxml/officeDocument/relationships}"
 SENSITIVE = re.compile(r"(?:^|[._ -])(?:secrets?|credentials?|passwords?|api[-_ ]?keys?|private[-_ ]?keys?|cookies|tokens?)(?:$|[._ -])", re.I)
 
 
-def document_path(value):
+def document_path(value, delivered_json=False):
     path = Path(value)
-    if not path.is_absolute() or ".." in path.parts or path.suffix.lower() not in SUPPORTED:
+    suffix = path.suffix.lower()
+    if suffix == '.json' and not delivered_json:
+        raise ValueError('JSON 交付需提供项目、原交付会话 ID 和消息号')
+    if not path.is_absolute() or ".." in path.parts or suffix not in SUPPORTED | {'.json'}:
         raise ValueError("需要登记过的绝对文件路径和支持的文件格式")
     canonical = path.resolve(strict=True)
     if canonical != path and not (path.is_relative_to('/var') and canonical == Path('/private') / path.relative_to('/')):
@@ -44,6 +48,12 @@ def document_path(value):
         blocked.remove('local-agent-mode-sessions')
     if any(part.casefold() in blocked or SENSITIVE.search(part) for part in canonical.parts):
         raise ValueError("该路径属于配置或凭据目录")
+    if suffix == '.json':
+        client_data = {'.codex', '.claude', '.dsh', 'application support'}
+        state_files = {'config', 'settings', 'state', 'metadata', 'session'}
+        if (client_data.intersection(part.casefold() for part in canonical.parts[:-1]) and not app_output
+                or canonical.stem.casefold() in state_files):
+            raise ValueError('此 JSON 属于客户端配置或状态文件')
     if canonical.is_relative_to(Path.home() / 'SharedBrain'):
         raise ValueError("共享大脑的内部数据文件不能作为交付文件读取")
     return canonical
@@ -242,6 +252,48 @@ def slide_parts(data, page=None, preview=False):
                 yield f'第 {number} 页', '\n'.join(lines)
 
 
+def json_delivery_parts(data, section):
+    text = data.decode('utf-8-sig').strip()
+
+    def check_object(pairs):
+        credential_suffixes = ('authorization', 'clientsecret', 'accesstoken', 'refreshtoken',
+                               'authtoken', 'sessionkey', 'privatekey', 'apikey', 'password', 'passwd')
+        for key, _ in pairs:
+            if SENSITIVE.search(key) or re.sub(r'[^a-z]', '', key.casefold()).endswith(credential_suffixes):
+                raise ValueError('该 JSON 包含结构化凭据字段')
+        return {}
+
+    def invalid_constant(_):
+        raise ValueError('JSON 包含非标准数字')
+
+    # Validate the document without interpreting numeric values in the returned source.
+    decoder = json.JSONDecoder(parse_int=str, parse_float=str, parse_constant=invalid_constant,
+                               object_pairs_hook=check_object)
+    try:
+        decoder.decode(text)
+        if section is None:
+            return [('正文', text)]
+        if text.startswith('{'):
+            space = re.compile(r'\s*')
+            position = space.match(text, 1).end()
+            matches = []
+            while text[position] != '}':
+                key, end = decoder.raw_decode(text, position)
+                start = space.match(text, space.match(text, end).end() + 1).end()
+                _, end = decoder.raw_decode(text, start)
+                if key == section:
+                    matches.append((key, text[start:end]))
+                position = space.match(text, end).end()
+                if text[position] != ',':
+                    break
+                position = space.match(text, position + 1).end()
+            if len(matches) == 1:
+                return matches
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError('JSON 格式不完整或嵌套过深') from exc
+    raise ValueError('没有唯一匹配的 JSON 顶层字段')
+
+
 def extract(path, data, section=None, page=None, preview=False):
     try:
         suffix = path.suffix.lower()
@@ -255,6 +307,10 @@ def extract(path, data, section=None, page=None, preview=False):
             parts = list(sheet_parts(data, section, preview))
         elif suffix == '.pptx':
             parts = list(slide_parts(data, page, preview))
+        elif suffix == '.json':
+            if page is not None:
+                raise ValueError('JSON 按顶层字段读取，请使用 section')
+            return json_delivery_parts(data, section)
         else:
             if page is not None:
                 raise ValueError('文本文件按章节读取，请使用 section')

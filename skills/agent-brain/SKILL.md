@@ -13,6 +13,8 @@ Before editing an existing deliverable, use `read_file` locally to verify the re
 
 Pass `later_version.current_sha256` as `expected_sha256` when opening a file version just verified by recall. On pagination, pass the first `read_file` response's `sha256` with `next_offset` so pages stay on the same version. A mismatch requires rechecking the file and its history before editing.
 
+For a registered JSON deliverable, pass the project, file, original assistant session and delivery ordinal. Use `section` for an exact top-level key such as `results`.
+
 Use whole-session message hits, nearby context, project references, structured user choices and file/version links to choose evidence. Wording by itself must not exclude evidence. Strip tool bodies, reasoning blocks and internal control messages. For an overwritten file, use the historical delivery references and check the current fingerprint before continuing.
 
 When `recall` returns `route=local`, use its source excerpts to answer. Each excerpt's `session` key maps to a full session ID in that page's `sessions`. If the first page lacks the answer, pass `next_offset` as `offset` with the same question and project, or open the exact source with `get_session(session_id, around=ordinal)`. Set `local_only=true` when the user wants a lookup without calling Eco. Use source excerpts to verify the answer before acting.

@@ -751,11 +751,17 @@ def authorized_paths(db, value):
 def summary_status(db, value):
     try:
         path = Path(value)
-        if path.suffix.lower() not in file_text.SUPPORTED:
+        is_json = path.suffix.lower() == '.json'
+        if not is_json and path.suffix.lower() not in file_text.SUPPORTED:
             return '格式待支持'
         st = path.stat()
         if not file_text.local_file_available(st):
             return '文件尚未下载到本机'
+        if is_json:
+            file_text.document_path(value, delivered_json=True)
+            return 'JSON 交付按原会话和消息号读取'
+    except ValueError:
+        return '此 JSON 不作为交付读取'
     except OSError:
         return '本机文件未找到'
     fingerprint = f'{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}'

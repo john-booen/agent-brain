@@ -1181,9 +1181,11 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
     if not allowed:
         raise ValueError('只可读取资料袋中已登记的原始资料或交付文件')
     try:
-        file = file_text.document_path(path)
+        file = file_text.document_path(path, delivered_json=session_id is not None)
         if file.is_relative_to(DATA) or file.is_relative_to(REPO):
             raise ValueError('不能通过资料袋读取共享大脑内部文件')
+        if file.suffix.lower() == '.json' and not file_text.local_file_available(file.stat()):
+            raise ValueError('登记文件尚未下载到本机')
         raw = file_text.read_bytes(file)
     except OSError as exc:
         raise ValueError('登记文件在本机不可用') from exc
