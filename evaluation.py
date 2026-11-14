@@ -75,6 +75,13 @@ def measure_card(db, case, tokenizer=None):
     return {'utf8_bytes': len(card.encode()), 'tokens': tokenizer(card) if tokenizer else None}
 
 
+def compare(previous, current):
+    fields = ('precision', 'recall', 'f1', 'exact_project_accuracy')
+    return {key: {metric: None if previous.get('metrics', {}).get(key, {}).get(metric) is None or value[metric] is None
+                         else value[metric] - previous['metrics'][key][metric]
+                  for metric in fields} for key, value in current['metrics'].items()}
+
+
 def fictional(fixture):
     with TemporaryDirectory(prefix='agent-brain-eval-') as temporary:
         brain.DATA = Path(temporary).resolve() / 'data'
@@ -97,6 +104,7 @@ def main():
     parser.add_argument('--tokenizer', metavar='ENCODING', help='Use an installed and locally cached tiktoken encoding')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--markdown', type=Path)
+    parser.add_argument('--compare', type=Path, help='Calculate metric changes from a previous scorecard JSON')
     args = parser.parse_args()
     if args.fictional:
         fixture = json.loads((brain.REPO / 'examples/eval.fictional.json').read_text())
@@ -115,6 +123,8 @@ def main():
                 parser.error('install the local tokenizer cache before requesting token counts')
         with brain.connect() as db:
             report = score(cases, lambda item: prediction(db, item), lambda item: measure_card(db, item, tokenizer))
+    if args.compare:
+        report['comparison'] = compare(json.loads(args.compare.read_text()), report)
     body = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.write_text(body + '\n')
@@ -130,6 +140,12 @@ def main():
             values = [measured[name] for name in ('precision', 'recall', 'f1', 'exact_project_accuracy')]
             display = ['—' if value is None else f'{value:.1%}' for value in values]
             lines.append('| ' + ' | '.join([key, *display]) + ' |')
+        if 'comparison' in report:
+            lines.extend(['', '| Field | Precision change | Recall change |', '|---|---:|---:|'])
+            for key, metrics in report['comparison'].items():
+                display = ['—' if metrics[name] is None else f'{100 * metrics[name]:+.1f} pp'
+                           for name in ('precision', 'recall')]
+                lines.append('| ' + ' | '.join([key, *display]) + ' |')
         lines.extend(['', '| Project ID | Status | Tokens | UTF-8 bytes |', '|---|---|---:|---:|'])
         for row in report['projects']:
             tokens = row['tokens'] if row['tokens'] is not None else '—'
