@@ -260,6 +260,41 @@ class PacketTest(unittest.TestCase):
         self.assertIn(old.name, self.tool('get_project',project='Atlas',section='history')['card'])
         self.assertIn('Ask Sam', self.tool('get_project',project='Atlas',section='rules')['card'])
 
+    def test_overwritten_delivery_does_not_inherit_previous_approval(self):
+        path = self.root / 'checklist.md'
+        path.write_text('# Checklist\nOwner is Amy.')
+        sid = 'codex:fictional-overwrite'
+        self.archive_messages(sid, 'Atlas', [('user', 'Draft the Atlas checklist.'),
+                                            ('assistant', f'已交付：{path}'),
+                                            ('user', '这份作为终版。')])
+        with patch.object(brain, 'now', return_value='2026-01-02T00:00:00+00:00'):
+            self.tool('log_work', project='Atlas', create_project=True, source='codex', work_id='approved',
+                      session_id=sid, summary='Reviewed the checklist.',
+                      deliverables=[{'path': str(path), 'task': 'Release process', 'confirmed': True, 'ordinal': 2}])
+            before = self.tool('get_project', project='Atlas', section='deliverables')['card']
+            self.assertIn('用户确认', before)
+            path.write_text('# Checklist\nOwner is Sam.')
+            self.tool('log_work', project='Atlas', source='kimi-work', work_id='overwritten',
+                      summary='Updated the assigned owner in the same file.',
+                      files=[{'path': str(path), 'status': '已交付'}])
+        after = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('最后交付待确认', after)
+        self.assertIn('Release process', after)
+        self.assertNotIn('用户确认', after)
+        self.assertIn('Owner is Sam.', self.tool('read_file',project='Atlas',path=path.name)['text'])
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            for ordinal, role, text in ((3, 'assistant', f'已交付：{path}'), (4, 'user', '这份作为终版。')):
+                index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,0)',
+                              (sid, ordinal, role, f'2026-01-03T00:00:0{ordinal}Z', text, text))
+            index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
+        with patch.object(brain, 'now', return_value='2026-01-04T00:00:00+00:00'):
+            self.tool('log_work', project='Atlas', source='codex', work_id='approved-again', session_id=sid,
+                      summary='Reviewed the updated checklist.',
+                      deliverables=[{'path': str(path), 'task': 'Release process', 'confirmed': True, 'ordinal': 4}])
+        confirmed = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('用户确认', confirmed)
+        self.assertIn(sid + '#4', confirmed)
+
     def test_work_log_citations_use_source_and_mark_unverified_items(self):
         sid = 'cowork:fictional-source-date'
         report = self.root / 'export' / 'report.md'

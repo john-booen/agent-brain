@@ -13,7 +13,7 @@ import file_text
 import notes
 
 
-VERSION = 27
+VERSION = 28
 FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -125,6 +125,24 @@ def citation(row, ordinal=None, time=None):
 
 def work_order(item):
     return item['ref']['time'], item.get('recorded_order', 0)
+
+
+def version_order(item):
+    ref = item['ref']
+    return (reference_time(ref), item.get('recorded_order', 0),
+            item.get('pinned', False), item.get('recorded', False))
+
+
+def reference_time(ref):
+    stamp = datetime.fromisoformat(ref.get('evidence_time') or ref['time'])
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def precedes_approval(delivery, approval):
+    if (delivery['session_id'] == approval['session_id']
+            and delivery['ordinal'] is not None and approval['ordinal'] is not None):
+        return delivery['ordinal'] <= approval['ordinal']
+    return reference_time(delivery) < reference_time(approval)
 
 
 def format_reference(ref):
@@ -373,9 +391,8 @@ def finish_entries(inputs, deliveries, rules, approvals):
         key = group_by_task(item, key, confirmed_version)
         versions = grouped[key]
         path = path or f"{item['ref']['session_id']}#{item['ref']['ordinal']}"
-        rank = (item.get('pinned', False), work_order(item), item.get('recorded', False))
         current = versions.get(path)
-        if not current or rank >= (current.get('pinned', False), work_order(current), current.get('recorded', False)):
+        if not current or version_order(item) >= version_order(current):
             versions[path] = {**item, 'final': item.get('final', False) or bool(current and current.get('final'))}
     # Fold duplicate paths explicitly registered under a task into that task.
     registered = {path: key for key, versions in grouped.items() for path, item in versions.items() if item.get('explicit_task')}
@@ -386,17 +403,20 @@ def finish_entries(inputs, deliveries, rules, approvals):
         if len(targets) == 1:
             target = grouped[next(iter(targets))]
             for path, item in versions.items():
-                target.setdefault(path, item)
+                current = target.get(path)
+                if not current or version_order(item) > version_order(current):
+                    target[path] = {**item, 'task': current['task'], 'explicit_task': True} if current else item
             del grouped[key]
-    approved = {}
-    for path, ref in sorted(approvals, key=lambda pair: pair[1]['time']):
-        approved[path] = ref
+    approved = defaultdict(list)
+    for path, ref in sorted(approvals, key=lambda pair: reference_time(pair[1])):
+        approved[path].append(ref)
     winners, history = [], []
     for versions in grouped.values():
         options = []
         for path, item in versions.items():
-            if path in approved and item.get('status') != '已失效':
-                item = {**item, 'pinned': True, 'approval': approved[path], 'status': '用户确认'}
+            approval = next((ref for ref in reversed(approved.get(path, [])) if precedes_approval(item['ref'], ref)), None)
+            if approval and item.get('status') != '已失效':
+                item = {**item, 'pinned': True, 'approval': approval, 'status': '用户确认'}
             if item['status'] == '已失效':
                 history.append({'kind': '交付', **item})
             elif item['status'] == '草稿':
