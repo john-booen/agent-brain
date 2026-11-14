@@ -1000,6 +1000,27 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertIn('Old model paraphrase.',prior)
         self.assertNotIn('Wrong amount',body)
 
+    def test_local_recall_reads_registered_task_identifiers_from_original_messages(self):
+        sid = 'codex:fictional-task-identifier'
+        good = self.root / 'old' / 'README.md'
+        other = self.root / 'elsewhere' / 'README.md'
+        user = '我先建一个微信2并采用轻量模型。'
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', f'The CV acceptance entry is [here]({good}).'),
+            ('assistant', f'The CV6 entry is [here]({other}).'),
+            ('user', user),
+        ])
+        archive = self.data/'agentsview/sessions.db'
+        def collect(question, items):
+            return brain.recall.named_task_evidence(archive,question,brain.visible,brain.packet.paths_in,brain.json_text,items)
+        entries = [{'path':str(good), 'ref':{'session_id':sid,'ordinal':0}},
+                   {'path':str(other), 'ref':{'session_id':sid,'ordinal':1}},
+                   {'text':user, 'ref':{'session_id':sid,'ordinal':2}},
+                   {'text':'这句话未出现在历史里。', 'ref':{'session_id':sid,'ordinal':2}}]
+        self.assertEqual(list(collect('CV 从哪个入口继续？',entries)),[(sid,0)])
+        self.assertEqual(list(collect('为什么要建微信2？',entries)),[(sid,2)])
+        self.assertEqual(collect('为什么要建微信3？',entries),{})
+
     def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
         evidence = {

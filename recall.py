@@ -692,6 +692,43 @@ def project_progress_evidence(db, archive, project_id, question, visible, paths_
     return result
 
 
+def named_task_evidence(archive, question, visible, paths_in, encode, items, first_page=()):
+    identifiers = re.findall(r'(?<![A-Za-z0-9_])(?:[A-Z]{2,}|[\u3400-\u9fff]{2,4}[0-9]+)(?![A-Za-z0-9_])',
+                             question)
+    if not identifiers:
+        return {}
+    terms = set(identifiers)
+    for term in identifiers:
+        if not term.isascii():
+            terms.update(term[start:] for start in range(1,len(term.rstrip('0123456789'))-1))
+    identifiers = [re.compile(r'(?<![A-Za-z0-9_])' + re.escape(term) + r'(?![A-Za-z0-9_])', re.I)
+                   for term in sorted(terms)]
+    if any(match.search(' '.join([row['text'],*row.get('files', [])]))
+           for row in first_page for match in identifiers):
+        return {}
+    result = {}
+    with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
+        index.row_factory = sqlite3.Row
+        for item in items:
+            ref = item['ref']
+            sid, ordinal = ref['session_id'], ref['ordinal']
+            if type(ordinal) is not int or ref.get('pending') or (sid, ordinal) in result:
+                continue
+            rows = extraction.transcript(index,sid,visible,paths_in,encode,focused=True,start=ordinal,end=ordinal)
+            if not rows:
+                continue
+            row = rows[0]
+            path = item.get('path')
+            text = item.get('text')
+            if not (path and path in row.get('files', []) or text and source_quote(row['text'], text)):
+                continue
+            if any(match.search(row['text']) for match in identifiers):
+                result[sid, ordinal] = {**row, 'session_id':sid}
+            if len(result)>=2:
+                break
+    return result
+
+
 def local_evidence(evidence, encode, count, offset=0, reason=''):
     rows=list(evidence.values())
     by_session = defaultdict(list)
@@ -1075,6 +1112,11 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             local = prioritize_named_client(question,local)
         try:
             progress = project_progress_evidence(db,archive,local_project,question,visible,paths_in,encode,load_packet)
+            if not progress and local_project and load_packet and re.search(r'[A-Z]{2}|[\u3400-\u9fff]{2}[0-9]',question):
+                packet_data = load_packet(local_project)
+                first_page = local_evidence(local,encode,count,reason=reason)
+                progress = named_task_evidence(archive,question,visible,paths_in,encode,
+                                               [*packet_data['deliverables'],*packet_data['rules']],first_page['evidence'])
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             progress = {}
         if progress:
