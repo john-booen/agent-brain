@@ -538,6 +538,16 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual([(sid,ordinal) for sid,ordinal,_ in brain.recall.text_matches(db,{'atlas-notes.md','修订稿'})],
                              [('codex:one',10)])
 
+    def test_eco_test_budget_override_retains_the_shared_meter(self):
+        settings = {'daily_credits': 2, 'weekly_credits': 5}
+        with self.assertRaises(brain.eco.BudgetUnavailable):
+            brain.eco.reserve(self.db,settings,'ordinary',3)
+        brain.eco.reserve(self.db,settings,'evaluation',3,enforce_budget=False)
+        self.assertEqual(brain.eco.snapshot(self.db,settings)['24h']['used_or_reserved'],3)
+        self.assertEqual(brain.eco.limits({'daily_credits':6000,'weekly_credits':35000}),(6000,35000))
+        with self.assertRaises(brain.eco.BudgetUnavailable):
+            brain.eco.reserve(self.db,settings,'ordinary',1)
+
     def test_busy_database_reports_error_and_accepts_retry_after_unlock(self):
         args = dict(project='Atlas', create_project=True, source='codex', summary='Fictional handoff.', work_id='lock')
         with sqlite3.connect(self.data / 'brain.sqlite') as writer:

@@ -34,8 +34,8 @@ def credit_bound(input_tokens, output_tokens):
 def limits(settings):
     day = settings.get('daily_credits', DAY_LIMIT)
     week = settings.get('weekly_credits', WEEK_LIMIT)
-    if type(day) is not int or type(week) is not int or not 0 < day <= DAY_LIMIT or not 0 < week <= WEEK_LIMIT:
-        raise BudgetUnavailable('Eco 积分配置超出授权范围')
+    if type(day) is not int or type(week) is not int or day <= 0 or week <= 0:
+        raise BudgetUnavailable('Eco 积分预算必须为正整数')
     return day, week
 
 
@@ -52,13 +52,14 @@ def snapshot(db, settings, instant=None):
     return {'unit': '积分', 'meter': '公开价未折扣上界，非服务商实扣', **windows}
 
 
-def reserve(db, settings, purpose, amount):
+def reserve(db, settings, purpose, amount, *, enforce_budget=True):
     instant = datetime.now(timezone.utc)
     db.execute('BEGIN IMMEDIATE')
     try:
-        state = snapshot(db, settings, instant)
-        if any(state[w]['used_or_reserved'] + amount > state[w]['limit'] for w in ('24h', '7d')):
-            raise BudgetUnavailable('Eco 积分预算不足')
+        if enforce_budget:
+            state = snapshot(db, settings, instant)
+            if any(state[w]['used_or_reserved'] + amount > state[w]['limit'] for w in ('24h', '7d')):
+                raise BudgetUnavailable('Eco 积分预算不足')
         recent = db.execute("SELECT max(at) FROM eco_requests WHERE status='rate_limited'").fetchone()[0]
         if recent and instant - datetime.fromisoformat(recent) < timedelta(minutes=15):
             raise BudgetUnavailable('Eco 限流冷却中')
@@ -71,7 +72,7 @@ def reserve(db, settings, purpose, amount):
         raise
 
 
-def call(db, settings, messages, purpose, send, encode, *, recall=False):
+def call(db, settings, messages, purpose, send, encode, *, recall=False, enforce_budget=True):
     url = settings.get('url', '')
     parsed = urlsplit(url)
     if (settings.get('enabled') is not True or settings.get('name') != MODEL or parsed.scheme != 'http'
@@ -81,7 +82,7 @@ def call(db, settings, messages, purpose, send, encode, *, recall=False):
     # UTF-8 bytes cover byte-based tokenizer input plus conservative protocol overhead.
     output_limit = RECALL_MAX_OUTPUT if recall else MAX_OUTPUT
     held = credit_bound(len(encode(messages).encode()) + 1024, output_limit)
-    request = reserve(db, settings, purpose, held)
+    request = reserve(db, settings, purpose, held, enforce_budget=enforce_budget)
     bill = {}
     status = 'unmeasured'
     try:
