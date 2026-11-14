@@ -135,6 +135,17 @@ class BrainTest(unittest.TestCase):
             brain.stream_choice(stream, measured.update)
         self.assertEqual(measured["prompt_tokens"], 10)
 
+    def test_truncated_model_stream_still_records_late_usage(self):
+        measured = {}
+        stream = [
+            b'data: {"error":{"message":"Completion output limit reached"}}',
+            b'data: {"choices":[{"finish_reason":"stop"}]}',
+            b'data: {"usage":{"prompt_tokens":12,"completion_tokens":8},"choices":[]}',
+            b'data: [DONE]',
+        ]
+        self.assertEqual(brain.stream_choice(stream, measured.update)['finish_reason'], 'length')
+        self.assertEqual(measured, {"prompt_tokens": 12, "completion_tokens": 8})
+
     def test_reconcile_two_names_for_the_same_project(self):
         payload = {"reason": "Both messages discuss the same release."}
         results = [(0, "Fictional Atlas", payload), (1, "Atlas release checklist", payload)]

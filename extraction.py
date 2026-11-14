@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 11
+REVISION = 12
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -23,19 +23,25 @@ Return JSON {"projects":[{"id":"an id from candidates, or null",
 "rules":[{"ordinal":2,"quote":"exact user quote","topic":"stable topic",
 "scope":"项目|本任务|对外版本","task":"optional task"}],
 "todos":[{"ordinal":12,"text":"specific unfinished work"}]}]}.
-Use the existing project ID only when the session advances that project. An unknown project can be proposed
-with id null and a name. Separate unrelated tasks and multiple projects. Omit casual task prompts from rules.
-Use only explicit user confirmation of the delivered version and quote the approving words.
-An instruction to revise a version does not confirm it. Omit confirmation when absent.
-A path must be exactly one of that message's file references.
-Use the user's ordinal for each rule, input, and confirmation. Use an assistant message for a deliverable.
-Keep a single entry for a task's final version. Repeated work on the same event or company should use
-one project ID where the candidate names refer to the same effort. Rules must capture durable limits or
-output constraints, not general goals, ordinary requests, or facts about the project. List only the
-latest outstanding actions with clear evidence. Keep descriptions short and JSON concise.
-Include the latest delivered usable result of each requested task even if the assistant did not say
-'final'. final means ready for the requested use at the end of that task, not signed or user-confirmed.
-A reply providing a ready-to-send text or a pass/fail result can itself be the delivery."""
+Assign work to a candidate only when the conversation advances that project. Prefer the candidate for the
+ongoing project over a name that only describes its document or step. Propose a new name with a null ID
+if no candidate fits. A reference, prior task, or example is not work on that project.
+Identify what the user requested and what was actually delivered. Include the latest usable outcome of
+each distinct task. A status update, background diagnosis, source citation or suggested next step is
+not a delivery when it leads to a later requested handoff. A finished answer, ready-to-send text or
+verification result can itself be a delivery. Use one record per actual artifact or completed output.
+Keep separate outputs when they serve different purposes, even if delivered in the same conversation.
+Use the assistant ordinal where each output was delivered. For a file, copy a reference from that
+message. For a text-only output, quote a short continuous excerpt of the result, not a statement of intent.
+Set final when the output is the latest usable version of its task. Only add confirmation when a later
+user message explicitly accepts that version. An instruction to make another revision is not approval.
+For rules, record constraints that would change how an agent continues the same work: required format,
+wording, treatment of figures, forbidden edits, or a confirmed choice among options. A task-specific
+constraint counts even if it applies only once. Omit broad motivations, general goals, descriptions of
+what to do, assistant proposals, and reported facts. Quote only the user's exact constraint, with its
+message ordinal. Use 本任务 by default and supply the stable task name. Use 项目 for explicitly
+project-wide constraints and 对外版本 for constraints explicitly scoped to an external version.
+Keep one current rule per task, topic and scope. Return concise JSON, with no analysis."""
 
 
 def schema(db):
@@ -83,6 +89,8 @@ def transcript(index, sid, visible, paths_in, encode):
         if row['role'] == 'user' and row['is_system'] and (row['content'] or '').startswith('{'):
             text = visible({'role': 'user', 'dialogue_text': selected_answer(row['content'])})
         if not text:
+            continue
+        if text.startswith(('<codex_internal_context', '<external_codex_apps_', '<environment_context>')):
             continue
         # Keep only file references from attachments and omit tool bodies.
         text = re.sub(r'<(file_contents|document_content|tool_result|tool_output)\b[^>]*>.*?</\1>',
@@ -165,7 +173,10 @@ def checked_result(response, evidence, valid_ids, clean):
                 if role and source.get('role') != role:
                     rejected += 1
                     continue
-                if key in {'inputs', 'deliverables'} and isinstance(path, str) and path in source.get('files', []):
+                if key in {'inputs', 'deliverables'} and path is not None:
+                    if not isinstance(path, str) or path not in source.get('files', []):
+                        rejected += 1
+                        continue
                     checked['path'] = path
                 elif key in {'inputs', 'deliverables', 'rules'}:
                     if not isinstance(quote, str) or len(quote.strip()) < 4 or quote not in source.get('text', ''):
@@ -300,6 +311,9 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
                 response = call_model([{'role':'system','content':PROMPT},{'role':'user','content':payload}], usage.update)
                 result = checked_result(response, {n: {**row, 'time': timestamps.get(n)} for n, row in mapped.items()},
                                         {item['id'] for item in allowed}, clean)
+                stats['rejected'] += result['rejected']
+                if result['rejected'] and not result['projects']:
+                    raise ValueError('No proposed project passed evidence checks')
                 for item in result['projects']:
                     item['time'] = timestamps.get(item['ordinal'])
                 result['archive_revision'] = archive_revision
@@ -311,7 +325,6 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
                     db.executemany('INSERT OR IGNORE INTO packet_extraction_assignments VALUES(?,?)',
                                    [(item['id'], sid) for item in result['projects'] if item['id']])
                 stats['processed'] += 1
-                stats['rejected'] += result['rejected']
             except (ValueError, OSError, RuntimeError) as exc:
                 status = {'ModelQuotaError': 'rate_limited', 'ModelRouteError': 'route_error'}.get(type(exc).__name__, 'failed')
                 if str(exc) == 'Model output reached its token budget':

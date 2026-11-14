@@ -297,6 +297,7 @@ class PacketTest(unittest.TestCase):
                       {'quote': 'Delivered', 'scope': '项目', 'topic': 'false', 'ordinal': 2}],
             'todos': [],
         }]}
+        answer['projects'][0]['deliverables'][1]['quote'] = 'Delivered'
         with patch.object(brain, 'model', return_value=answer) as model:
             stats = brain.extraction.process(self.db, self.data, [sid], brain.visible, brain.packet.paths_in,
                                              brain.json_text, brain.clean, model, 20000)
@@ -310,6 +311,18 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(card['evidence'], '模型核对')
         self.assertIn('用户确认', self.tool('get_project', project='Atlas', section='deliverables')['card'])
         self.assertIn('Use the conservative range', self.tool('get_project', project='Atlas', section='rules')['card'])
+
+        model_count = self.db.execute('SELECT COUNT(*) FROM packet_extractions').fetchone()[0]
+        with patch.object(brain, 'model', return_value={'projects': [
+            {'id': project, 'ordinal': 99, 'summary': 'Unverifiable evidence.'},
+        ]}) as invalid_model:
+            stats = brain.extraction.process(
+                self.db, self.data, [sid], brain.visible, brain.packet.paths_in, brain.json_text, brain.clean,
+                invalid_model, 40000, force=True,
+            )
+        self.assertEqual((stats['processed'], stats['failed'], stats['rejected']), (0, 1, 1))
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM packet_extractions').fetchone()[0], model_count)
+        self.assertIn('用户确认', self.tool('get_project', project='Atlas', section='deliverables')['card'])
 
     def test_model_extracts_selected_answer_without_passing_question_options(self):
         sid = 'deepseek-harness:fictional-selection'
@@ -339,6 +352,18 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertNotIn('private-', brain.json_text(attachment))
         self.assertEqual(set(message['files']), {'research/report.md', '/tmp/atlas.md'})
         self.assertNotIn('private-', message['text'])
+
+    def test_model_transcript_excludes_client_control_messages(self):
+        session = 'codex:fictional-controls'
+        self.archive_messages(session, 'Atlas', [
+            ('user', '<codex_internal_context>internal</codex_internal_context>'),
+            ('user', '<external_codex_apps_open_page>{}</external_codex_apps_open_page>'),
+            ('user', 'Use a plain-text daily schedule.'),
+        ])
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            index.row_factory = sqlite3.Row
+            messages = brain.extraction.transcript(index, session, brain.visible, brain.packet.paths_in, brain.json_text)
+        self.assertEqual([message['ordinal'] for message in messages], [2])
 
     def test_usage_log_contains_only_metadata(self):
         brain.usage.record(self.data, 'codex', 'get_project',

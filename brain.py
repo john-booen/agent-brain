@@ -1056,7 +1056,7 @@ def stream_choice(response, on_usage=None):
             message = str(error.get("message", "") if isinstance(error, dict) else error).lower()
             if finish == "length" or ("limit" in message and any(word in message for word in ("output", "completion", "length"))):
                 finish = "length"
-                break
+                continue
             raise ModelRouteError("Model stream returned an upstream error")
         choices = event.get("choices") or []
         if not isinstance(choices, list) or any(not isinstance(choice, dict) for choice in choices):
@@ -1067,7 +1067,8 @@ def stream_choice(response, on_usage=None):
             if not isinstance(delta, dict) or (text is not None and not isinstance(text, str)):
                 raise ValueError("Expected text in the model stream")
             content.append(text or "")
-            finish = choice.get("finish_reason") or finish
+            if finish != "length":
+                finish = choice.get("finish_reason") or finish
     if not finish:
         raise ValueError("Model stream ended before a final response")
     return {"message": {"content": "".join(content)}, "finish_reason": finish}
