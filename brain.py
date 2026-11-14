@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import file_text
 import packet
 import extraction
+import usage
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -1444,6 +1445,11 @@ def call_tool(db, name, args):
 
 
 def mcp(db):
+    count_tokens = usage.token_counter()
+    source = os.environ.get('AGENT_BRAIN_SOURCE')
+    origin = os.environ.get('AGENT_BRAIN_USAGE_ORIGIN', 'client')
+    if origin not in {'client', 'test'}:
+        origin = 'test'
     for line in sys.stdin:
         req_id = None
         try:
@@ -1461,11 +1467,25 @@ def mcp(db):
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
+                name = params.get("name")
+                invocation = params.get("arguments", {})
                 try:
-                    data = call_tool(db, params["name"], params.get("arguments", {}))
-                    result = {"content": [{"type": "text", "text": json_text(data)}]}
+                    data = call_tool(db, name, invocation)
+                    text = json_text(data)
+                    result = {"content": [{"type": "text", "text": text}]}
                 except Exception as exc:
-                    result = {"isError": True, "content": [{"type": "text", "text": clip_bytes(clean(str(exc)), 600)}]}
+                    text = clip_bytes(clean(str(exc)), 600)
+                    data = {}
+                    result = {"isError": True, "content": [{"type": "text", "text": text}]}
+                if isinstance(name, str) and name in TOOLS:
+                    project = invocation.get('project') if isinstance(invocation, dict) else None
+                    try:
+                        if project and isinstance(project, str) and not (data.get('id') or data.get('project_id')):
+                            data = {**data, 'project_id': resolve_project_id(db, project)}
+                        usage.record(DATA, source if source in LOG_SOURCES else None, name, data, text,
+                                     result.get("isError", False), count_tokens, origin)
+                    except (OSError, ValueError, sqlite3.Error) as exc:
+                        print(f"Usage log: {type(exc).__name__}", file=sys.stderr)
             elif method == "ping":
                 result = {}
             else:
@@ -1535,6 +1555,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("mcp")
     commands.add_parser("list-projects")
+    commands.add_parser("weekly-report", help="Generate private reports for the last complete week")
     run = commands.add_parser("tool")
     run.add_argument("name", choices=TOOLS)
     run.add_argument("arguments", nargs="?", default="{}")
@@ -1595,6 +1616,8 @@ def main():
             print(json_text(summarize_session(db, args.session_id)))
         elif args.command == "tool":
             print(json_text(call_tool(db, args.name, json.loads(args.arguments))))
+        elif args.command == "weekly-report":
+            print(json_text({"directory": str(usage.weekly(db, DATA))}))
         elif args.command == 'build-packets':
             result = build_packets(db, args)
             print(json_text(result), flush=True)

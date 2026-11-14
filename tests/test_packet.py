@@ -264,6 +264,14 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(evidence[0]['text'], 'User selected: picked answer')
         self.assertEqual(evidence[1]['files'], ['research/fictional-report.md'])
 
+    def test_usage_log_contains_only_metadata(self):
+        brain.usage.record(self.data, 'codex', 'get_project',
+                           {'id': 'fictional'}, 'private card body', False, lambda _: 4)
+        body = (self.data / 'usage.jsonl').read_text()
+        assert 'private card body' not in body
+        self.assertEqual(json.loads(body)['tokens'], 4)
+        self.assertTrue(json.loads(body)['hit'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:
