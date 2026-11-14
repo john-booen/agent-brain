@@ -1086,9 +1086,9 @@ def extract_packets(db, args):
         JOIN projects p ON w.project_id=p.id LEFT JOIN project_redirects r ON r.old_id=p.id
         WHERE r.old_id IS NULL AND w.session_id IS NOT NULL AND w.kind='summary'
         GROUP BY w.session_id ORDER BY MAX(w.occurred) DESC""")]
-    route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": 3500,
+    route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": extraction.MAX_OUTPUT_TOKENS,
              "extra_body": {"stream": True, "stream_options": {"include_usage": True},
-                            "reasoning_effort": "low", "thinking": {"type": "disabled"},
+                            "reasoning_effort": "none",
                             "response_format": {"type": "json_object"}}}
     return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
                               lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),
