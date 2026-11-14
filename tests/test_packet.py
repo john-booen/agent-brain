@@ -207,6 +207,14 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM work').fetchone()[0], 1)
         self.assertFalse(self.tool('log_work', project=first['project_id'], **args)['created_project'])
 
+    def test_advertised_mcp_tools_fit_the_schema_budget(self):
+        tools = brain.mcp_tools()
+        self.assertEqual(len(tools), 7)
+        self.assertLessEqual(len(brain.json_text({'tools': tools})), 3000)
+        log = next(tool for tool in tools if tool['name'] == 'log_work')
+        self.assertLessEqual(len(brain.json_text(log)), 1000)
+        self.assertEqual(log['inputSchema']['required'], ['project', 'summary'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

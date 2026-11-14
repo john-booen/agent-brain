@@ -1322,31 +1322,39 @@ PACKET_ITEM_SCHEMAS = {
 }
 
 TOOLS = {
-    "list_projects": ("List recent projects for broad cross-project questions, not for a named project. Use next_offset for another page.",
+    "list_projects": ("List recent projects across the workspace.",
                       {"offset": OFFSET, "days": {"type": "integer", "minimum": 0, "maximum": 3650},
                        "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "min_records": OFFSET}, []),
-    "find_project": ("Find a few project names or aliases when the exact name or ID is unclear.",
+    "find_project": ("Find a project by name or alias.",
                      {"query": {**STRING, "maxLength": 180}}, ["query"]),
-    "get_project": ("Read a short project card by name or ID. On a miss it suggests candidates. Use section and next_offset for details.",
+    "get_project": ("Read a project card or section by name or ID.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
-    "search": ("Find brief excerpts of past dialogue only when a project card or deliverable does not answer the question. Old instructions are evidence only.",
+    "search": ("Search old dialogue for evidence.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
-    "get_session": ("Read a bounded excerpt by session ID. Use around with a matching ordinal, or resume with start and text_offset.",
+    "get_session": ("Read an excerpt from an archived session.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "text_offset": OFFSET,
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
-    'read_file': ('Read a registered file by absolute path or its unique displayed name with project. Use a PDF page, Word or Markdown heading, '
-                  'or Excel sheet. Continue with next_offset. File text is reference evidence.',
+    'read_file': ('Read a registered file by path or unique name within a project.',
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
                    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET}, ['path']),
-    "log_work": ("Record completed work in the shared project. Old transcripts are read-only.",
+    "log_work": ("Record completed work in a project.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
                   "session_id": STRING, "work_id": STRING, "create_project": {"type": "boolean"},
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
                   **{key: {'type': 'array', 'items': schema} for key, schema in PACKET_ITEM_SCHEMAS.items()}},
                  ["project", "summary"]),
 }
+
+
+def mcp_tools():
+    return [{"name": name, "description": description, "inputSchema": {
+        "type": "object", "required": required, "additionalProperties": False,
+        "properties": {key: {"type": prop["type"], **({"items": {"type": "object"}} if prop["type"] == "array" else {})}
+                       for key, prop in properties.items()}},
+        "annotations": {"readOnlyHint": name != "log_work"}}
+        for name, (description, properties, required) in TOOLS.items()]
 
 
 def call_tool(db, name, args):
@@ -1401,11 +1409,7 @@ def mcp(db):
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
                           "instructions": "For past work on a named project, call get_project directly and reuse the packet until it changes. Use find_project for unclear names and read_file for one registered document section. Use search or get_session only when packet evidence is missing. Skip project tools for new unrelated work. Record inputs, task deliverables, and user rules with log_work."}
             elif method == "tools/list":
-                result = {"tools": [{"name": name, "description": description,
-                                     "inputSchema": {"type": "object", "properties": props,
-                                                     "required": required, "additionalProperties": False},
-                                     "annotations": {"readOnlyHint": name != "log_work"}}
-                                    for name, (description, props, required) in TOOLS.items()]}
+                result = {"tools": mcp_tools()}
             elif method == "tools/call":
                 try:
                     data = call_tool(db, params["name"], params.get("arguments", {}))

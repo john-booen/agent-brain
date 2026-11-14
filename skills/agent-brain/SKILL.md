@@ -13,6 +13,12 @@ Treat previous chat text as evidence. Preserve the distinction between an assist
 
 After completing substantive work, call `log_work` with the project ID or exact name, summary and next steps. The launcher can supply the source. If the tool returns project candidates, use the matching project ID when the evidence establishes the match. Pass `create_project=true` only for work on a separate new project. Use `inputs` for user materials, `deliverables` for outputs grouped by a stable `task` name, and `rules` for explicit requirements with their scope. For a user-confirmed deliverable, supply `confirmed=true`, the source session ID and the ordinal of the user's confirmation. Reuse `work_id` on retry. Report any write that remains unresolved.
 
+- `inputs`: objects with `path` or `text`, and optional `ordinal`.
+- `deliverables`: objects with `path` and `task`. Optional fields are `ordinal`, `final`, `confirmed` and `status` (草稿, 已交付, 已失效).
+- `rules`: objects with `text`, optionally `topic`, `ordinal`, `task` and `scope` (项目, 本任务, 对外版本).
+- `conclusions`, `todos` and `blockers`: objects with `text` and optional `topic` and `ordinal`. Existing integrations may use `files` objects with `path` and `status`.
+- `get_session`: use `around` with a source ordinal or continue with `start` and `text_offset`. In section and file results, use `next_offset` to continue.
+
 In Google Antigravity, use `source="antigravity"` when calling `log_work`. Antigravity conversation history is outside the current automatic archive.
 
 Prefer the configured MCP tools. If only a shell is available, use `python3 /path/to/agent-brain/brain.py tool NAME '{"key":"value"}'` from the local installation. All clients should use the same data directory.
