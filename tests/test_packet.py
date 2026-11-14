@@ -230,7 +230,8 @@ class PacketTest(unittest.TestCase):
         answer = {'projects': [{
             'id': project, 'ordinal': 2, 'summary': 'Atlas report delivered.',
             'inputs': [{'path': str(brief), 'ordinal': 0}],
-            'deliverables': [{'path': str(report), 'task': 'Report', 'ordinal': 2, 'final': True, 'confirmation': 3},
+            'deliverables': [{'path': str(report), 'task': 'Report', 'ordinal': 2, 'final': True,
+                              'confirmation': 3, 'confirmation_quote': 'I accept the Atlas report as final.'},
                              {'path': str(self.root / 'invented.md'), 'task': 'Other', 'ordinal': 2}],
             'rules': [{'quote': 'Use the conservative range', 'scope': '对外版本', 'topic': 'figures', 'ordinal': 1},
                       {'quote': 'Delivered', 'scope': '项目', 'topic': 'false', 'ordinal': 2}],

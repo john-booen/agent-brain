@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 8
+REVISION = 9
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -18,14 +18,15 @@ Return JSON {"projects":[{"id":"an id from candidates, or null",
 "inputs":[{"ordinal":1,"path":"one exact file reference from that message"}],
 "deliverables":[{"ordinal":8,"task":"stable task name","path":"exact file reference or omit",
 "quote":"exact text excerpt for a text-only delivery","description":"what it is for",
-"final":true,"confirmation":10}],
+"final":true,"confirmation":10,"confirmation_quote":"exact approving words"}],
 "rules":[{"ordinal":2,"quote":"exact user quote","topic":"stable topic",
 "scope":"项目|本任务|对外版本","task":"optional task"}],
 "todos":[{"ordinal":12,"text":"specific unfinished work"}]}]}.
 Use the existing project ID only when the session advances that project. An unknown project can be proposed
 with id null and a name. Separate unrelated tasks and multiple projects. Omit casual task prompts from rules.
-Use only explicit user confirmation of the delivered version. An instruction to revise a version does not
-confirm it. Omit confirmation when absent. A path must be exactly one of that message's file references.
+Use only explicit user confirmation of the delivered version and quote the approving words.
+An instruction to revise a version does not confirm it. Omit confirmation when absent.
+A path must be exactly one of that message's file references.
 Use the user's ordinal for each rule, input, and confirmation. Use an assistant message for a deliverable.
 Keep a single entry for a task's final version. Repeated work on the same event or company should use
 one project ID where the candidate names refer to the same effort. Rules must capture durable limits or
@@ -162,7 +163,10 @@ def checked_result(response, evidence, valid_ids, clean):
                     if isinstance(fact.get('description'), str):
                         checked['description'] = clean(fact['description'])[:180]
                     confirmation = fact.get('confirmation')
+                    approval_text = fact.get('confirmation_quote')
                     if (type(confirmation) is int and confirmation > ordinal and evidence.get(confirmation, {}).get('role') == 'user'
+                            and isinstance(approval_text, str) and approval_text.strip()
+                            and approval_text in evidence[confirmation].get('text', '')
                             and (confirmation - ordinal <= 10 or
                                  (checked.get('path') and Path(checked['path']).name in evidence[confirmation].get('text', '')))):
                         checked['confirmation'] = confirmation
