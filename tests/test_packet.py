@@ -6,7 +6,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -296,6 +296,16 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(report['collector_exit'], 1)
         with sqlite3.connect(brain.health.backup(self.db, self.data)) as snapshot:
             self.assertEqual(snapshot.execute('SELECT name FROM projects').fetchone(), ('Atlas',))
+
+    def test_health_observation_requires_a_continuous_window(self):
+        at = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+        events = [{'event': 'packet_refresh', 'at': (at - timedelta(minutes=m)).isoformat(), 'status': 'ok'}
+                  for m in range(0, 48 * 60 + 5, 5)]
+        file = self.data / 'health.log'
+        file.write_text('\n'.join(map(json.dumps, events)))
+        self.assertTrue(brain.health.collector_observation(self.data, at)['passed'])
+        file.write_text('\n'.join(map(json.dumps, events[:250])))
+        self.assertFalse(brain.health.collector_observation(self.data, at)['passed'])
 
     def test_rate_limit_leaves_a_visible_status_and_stops_until_next_window(self):
         sid = 'codex:fictional-quota'

@@ -27,7 +27,45 @@ def report(db, directory):
             'last_collection': coverage.get('completedAt'), 'collector_exit': coverage.get('exit'),
             'packet_refresh': coverage.get('packetRefresh'), 'pending_summary_sessions': indexed,
             'model_last_24h': dict(zip(('attempts','measured_input_tokens','measured_output_tokens','reserved_tokens'), totals)),
+            'collector_observation': collector_observation(directory),
             'sqlite': db.execute('PRAGMA quick_check').fetchone()[0]}
+
+
+def collector_observation(directory, now=None):
+    now = now or datetime.now(timezone.utc)
+    start = now - timedelta(hours=48)
+    last_before = None
+    selected, failures = [], 0
+    try:
+        log = (directory / 'health.log').open()
+    except FileNotFoundError:
+        return {'passed': False, 'rounds': 0, 'observed_hours': 0, 'failures': 0}
+    with log:
+        for line in log:
+            try:
+                event = json.loads(line)
+                at = datetime.fromisoformat(event.get('at', ''))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if at.tzinfo is None:
+                continue
+            kind = event.get('event')
+            if at > now or kind not in {'packet_refresh', 'collector', 'source_collection'}:
+                continue
+            if at < start and kind == 'packet_refresh':
+                last_before = max(last_before or at, at)
+            elif at >= start:
+                if event.get('status') in {'failed', 'partial'}:
+                    failures += 1
+                if kind == 'packet_refresh':
+                    selected.append(at)
+    times = [*([last_before] if last_before else [start]), *sorted(selected), now]
+    max_gap = max((b - a).total_seconds() for a, b in zip(times, times[1:]))
+    observed = min(48, (now - (last_before or selected[0])).total_seconds() / 3600) if selected else 0
+    covers_start = last_before is not None or bool(selected and min(selected) == start)
+    return {'passed': bool(covers_start and selected and max_gap <= 720),
+            'rounds': len(selected), 'observed_hours': round(observed, 2),
+            'max_gap_seconds': round(max_gap), 'failures': failures}
 
 
 def write_report(db, directory):
