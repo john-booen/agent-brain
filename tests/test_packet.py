@@ -939,6 +939,16 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(local['evidence'][0]['later_version'],
                          {'session':'1','ordinal':3,'reported_pages':[2,1],'reported_format_quotes':['`PAGE` 域','No footer'],
                           'current_matches_reported_hash':False})
+        claim = {'ref':old_ref,'text':'The initial report had two pages.','kind':'deliverable',
+                 'quote':'had 2 页','path':str(version)}
+        verified, = brain.recall.checked_claims({'claims':[claim]},evidence)
+        self.assertEqual(verified['later_version'], {'session_id':sid,'ordinal':3,'reported_pages':[2,1],
+                         'reported_format_quotes':['`PAGE` 域','No footer'],'current_matches_reported_hash':False})
+        self.assertNotIn(str(version),str(verified))
+        other = f'{self.root}/notice.docx'
+        unrelated = {**evidence[old_ref],'files':[str(version),other]}
+        checked, = brain.recall.checked_claims({'claims':[{**claim,'path':other}]},{old_ref:unrelated})
+        self.assertNotIn('later_version',checked)
 
     def test_recall_search_uses_agentsview_trigrams_for_full_words(self):
         with sqlite3.connect(':memory:') as db:

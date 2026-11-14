@@ -479,6 +479,7 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
                 if pages!=after:
                     local_versions[ref] = {'session_id':latest_row['session_id'],'ordinal':latest_row['ordinal'],
                                            'reported_pages':[pages,after],
+                                           'file_reference':record['path'],
                                            'current_matches_reported_hash':(
                                                current['sha256']==last[1]['sha256'] if last[1].get('sha256') else None)}
                     formats = [record.get('reported_format_quote'),last[1].get('reported_format_quote')]
@@ -536,18 +537,32 @@ def bounded(result, encode, count):
                                   for claim in result['evidence']]
         if not fits():
             # Use the same session table as the local evidence page when references repeat.
-            refs = {sid: str(n) for n, sid in enumerate(
-                dict.fromkeys(claim['session_id'] for claim in result['evidence']), 1)}
-            compact = [{**{key:value for key,value in claim.items() if key!='session_id'},
-                       'session': refs[claim['session_id']]} for claim in result['evidence']]
+            def referenced_sessions(claim):
+                yield claim['session_id']
+                if later := claim.get('later_version'):
+                    yield later['session_id']
+            refs = {sid:str(n) for n,sid in enumerate(
+                dict.fromkeys(sid for claim in result['evidence'] for sid in referenced_sessions(claim)),1)}
+            compact = []
+            for claim in result['evidence']:
+                item = {**{key:value for key,value in claim.items() if key!='session_id'},
+                        'session':refs[claim['session_id']]}
+                if later := item.get('later_version'):
+                    item['later_version'] = {**{key:value for key,value in later.items() if key!='session_id'},
+                                             'session':refs[later['session_id']]}
+                compact.append(item)
             candidate = {**result, 'evidence':compact, 'sessions':{ref:sid for sid,ref in refs.items()}}
             if len(encode(candidate).encode()) < len(encode(result).encode()):
                 result = candidate
         while not fits() and len(result['evidence'])>1:
-            result['evidence'].pop()
+            # Preserve a locally verified version discrepancy ahead of another claim's paraphrase.
+            removable = next((n for n in range(len(result['evidence'])-1,-1,-1)
+                              if not result['evidence'][n].get('later_version')),len(result['evidence'])-1)
+            result['evidence'].pop(removable)
             result['omitted_claims'] = total-len(result['evidence'])
             if 'sessions' in result:
                 used = {claim['session'] for claim in result['evidence']}
+                used.update(claim['later_version']['session'] for claim in result['evidence'] if claim.get('later_version'))
                 result['sessions'] = {ref:sid for ref,sid in result['sessions'].items() if ref in used}
         if not fits() and result.get('uncertain'):
             result['uncertain'] = '另有待核事项，请回看原文。'
@@ -846,6 +861,9 @@ def checked_claims(raw, evidence, diagnostics=None, read_confirmation=None):
                  'quote': extraction.text_excerpt(matched, 86)}
         if path:
             entry['file'] = Path(path).name[:145]
+            version = source.get('later_version')
+            if version and version.get('file_reference') == path:
+                entry['later_version'] = {key:value for key,value in version.items() if key!='file_reference'}
         elif kind=='deliverable' and source.get('inline_sections') and not source.get('files'):
             entry['inline_sections'] = source['inline_sections']
         if kind == 'confirmed':
