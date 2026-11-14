@@ -1103,6 +1103,25 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         with patch.object(brain, 'archive', return_value={}):
             self.assertIn('handbook.md', self.tool('search', query='Atlas status')['matches'][0]['path'])
 
+    def test_search_falls_back_to_index_when_archive_api_is_unavailable(self):
+        sid = 'kimi-work:fictional-recent-search'
+        self.archive_messages(sid, 'Atlas', [('user','Check the final result'),
+                                             ('assistant','The glass compass is ready.'),
+                                             ('assistant','A glass compass was used by a tool.')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            index.execute('ALTER TABLE sessions ADD COLUMN deleted_at TEXT')
+            index.execute('ALTER TABLE sessions ADD COLUMN agent TEXT')
+            index.execute("UPDATE sessions SET agent='kimi-work'")
+            index.execute('UPDATE messages SET is_system=1 WHERE ordinal=2')
+        with patch.object(brain,'archive',side_effect=RuntimeError('Loopback unavailable')):
+            result = self.tool('search', query='glass compass')
+            self.assertEqual((result['status'],result['route']),('ok','local'))
+            self.assertEqual([(x['session_id'],x['source'],x['ordinal']) for x in result['matches']],[(sid,'kimi-work',1)])
+            self.assertEqual(self.tool('search',query='used by a tool')['status'],'没命中')
+            with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+                index.execute("UPDATE sessions SET deleted_at='2026-01-01T00:00:00Z'")
+            self.assertEqual(self.tool('search',query='glass compass')['status'],'没命中')
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

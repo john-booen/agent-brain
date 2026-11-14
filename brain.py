@@ -422,6 +422,34 @@ def verify_agentsview():
     return actual.strip()
 
 
+def search_matches(query, limit):
+    results = archive('session', 'search', '--in', 'messages', '--exclude-system',
+                      '--include-automated', '--include-children', '--include-one-shot',
+                      '--limit', min(80, limit * 8), '--', query)
+    for hit in results.get('matches', []):
+        sid, ordinal = hit.get('session_id'), hit.get('ordinal')
+        if not sid or type(ordinal) is not int:
+            continue
+        page = archive('session', 'messages', sid, '--around', ordinal, '--before', 0, '--after', 0)
+        if hit.get('transcript_revision') and page.get('transcript_revision') != hit['transcript_revision']:
+            continue
+        for row in page.get('messages', []):
+            if row['ordinal']==ordinal:
+                yield sid, hit.get('agent'), row
+
+
+def search_local_index(query):
+    path = DATA/'agentsview/sessions.db'
+    with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as index:
+        index.row_factory = sqlite3.Row
+        index.execute('BEGIN')
+        for sid, ordinal, _ in recall.text_matches(index,{normalized(query)}):
+            row = index.execute('''SELECT m.*, s.agent FROM messages m JOIN sessions s ON s.id=m.session_id
+                WHERE m.session_id=? AND m.ordinal=? AND s.deleted_at IS NULL''',(sid,ordinal)).fetchone()
+            if row:
+                yield sid, row['agent'], dict(row)
+
+
 def find(db, query, limit=5):
     q = normalized(query)
     if not q:
@@ -436,44 +464,45 @@ def find(db, query, limit=5):
         if response_size(result) > QUERY_BYTES:
             matches.pop()
             break
+    def collect(hits):
+        for sid, agent, row in hits:
+            if len(matches) >= limit:
+                break
+            if sid in seen:
+                continue
+            text = visible(row)
+            if q not in normalized(text):
+                continue
+            owners = db.execute('SELECT DISTINCT project_id FROM work WHERE session_id=? LIMIT 2',(sid,)).fetchall()
+            hit_start = max(0, text.casefold().find(query.strip().casefold()) - 55)
+            excerpt = ('…' if hit_start else '') + text[hit_start:hit_start + 198]
+            if hit_start+198 < len(text):
+                excerpt += '…'
+            match = {'session_id':sid, 'source':agent, 'ordinal':row['ordinal'],
+                     'time':row.get('timestamp'), 'text':clip_bytes(excerpt,230)}
+            if len(owners)==1:
+                match['project_id'] = owners[0][0]
+            matches.append(match)
+            seen.add(sid)
+            if response_size(result)>QUERY_BYTES:
+                matches.pop()
+                break
     try:
-        results = archive("session", "search", "--in", "messages", "--exclude-system",
-                          "--include-automated", "--include-children", "--include-one-shot",
-                          "--limit", min(80, limit * 8), "--", query)
-        for hit in results.get("matches", []):
-            if len(matches) >= limit:
-                break
-            sid, ordinal = hit.get("session_id"), hit.get("ordinal")
-            if not sid or sid in seen or ordinal is None:
-                continue
-            page = archive("session", "messages", sid, "--around", ordinal, "--before", 0, "--after", 0)
-            if hit.get("transcript_revision") and page.get("transcript_revision") != hit["transcript_revision"]:
-                continue
-            for row in page.get("messages", []):
-                text = visible(row)
-                if row["ordinal"] == ordinal and q in normalized(text):
-                    owners = db.execute("SELECT DISTINCT project_id FROM work WHERE session_id=? LIMIT 2", (sid,)).fetchall()
-                    hit_start = max(0, text.casefold().find(query.strip().casefold()) - 55)
-                    excerpt = ("…" if hit_start else "") + text[hit_start:hit_start + 198]
-                    if hit_start + 198 < len(text):
-                        excerpt += "…"
-                    match = {"session_id": sid, "source": hit.get("agent"), "ordinal": ordinal,
-                             "time": row.get("timestamp"), "text": clip_bytes(excerpt, 230)}
-                    if len(owners) == 1:
-                        match["project_id"] = owners[0][0]
-                    matches.append(match)
-                    seen.add(sid)
-                    if response_size(result) > QUERY_BYTES:
-                        matches.pop()
-                        limit = len(matches)
-                    break
-            if len(matches) >= limit:
-                break
+        if len(matches)<limit:
+            with closing(search_matches(query,limit)) as hits:
+                collect(hits)
     except (RuntimeError, OSError, ValueError) as exc:
-        result.update(status="索引旧", detail=clip_bytes(clean(str(exc)), 170))
-        while matches and response_size(result) > QUERY_BYTES:
+        result['route'] = 'local'
+        while matches and response_size(result)>QUERY_BYTES:
             matches.pop()
-        return result
+        try:
+            with closing(search_local_index(query)) as hits:
+                collect(hits)
+        except (sqlite3.Error, OSError):
+            result.update(status='索引旧', detail=clip_bytes(clean(str(exc)), 170))
+            while matches and response_size(result)>QUERY_BYTES:
+                matches.pop()
+            return result
     matches.sort(key=lambda item: item.get("project_id") or item.get("session_id") or item["path"])
     if not matches and not result["projects"]:
         result["status"] = "没命中"
