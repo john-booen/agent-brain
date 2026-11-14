@@ -295,6 +295,23 @@ class PacketTest(unittest.TestCase):
         self.assertIn('模型提取', self.tool('get_project', project='Atlas')['coverage'])
         self.assertIn('模型提取', self.tool('list_projects')['coverage'])
 
+    def test_obsidian_scan_is_read_only_and_registers_exact_project_folder(self):
+        vault = self.root / 'vault'
+        (vault / '.obsidian').mkdir(parents=True)
+        notebook = vault / 'handbook.md'
+        notebook.write_text('# Atlas status\nFictional notes for the project.')
+        before = notebook.read_bytes()
+        sid = 'codex:fictional-vault'
+        self.archive_messages(sid, 'Atlas', [('user', 'Review the Atlas packet.')])
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            index.execute('UPDATE sessions SET cwd=?', (str(vault),))
+        self.tool('log_work', project='Atlas', create_project=True, source='codex', summary='Initial record.', session_id=sid)
+        self.assertEqual(brain.notes.scan(self.db, vault, brain.clean)['scanned'], 1)
+        self.assertEqual(notebook.read_bytes(), before)
+        self.assertIn('handbook.md', self.tool('get_project', project='Atlas', section='inputs')['card'])
+        with patch.object(brain, 'archive', return_value={}):
+            self.assertIn('handbook.md', self.tool('search', query='Atlas status')['matches'][0]['path'])
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

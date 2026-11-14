@@ -8,9 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import file_text
+import notes
 
 
-VERSION = 21
+VERSION = 22
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -581,8 +582,9 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         (*lookup_ids, *lookup_ids)).fetchall()
     previous = db.execute('SELECT data, signature FROM project_packets WHERE project_id=?', (project_id,)).fetchone()
     relocations = {row[0]: row[1] for row in db.execute('SELECT old_path,path FROM packet_path_relocations ORDER BY old_path')}
+    notes_revision = db.execute('SELECT MAX(scanned) FROM vault_notes').fetchone()[0]
     work_signature = hashlib.sha256(json.dumps([VERSION, [tuple(row) for row in rows], relocations,
-                                                [tuple(row) for row in extracted_rows]], ensure_ascii=False).encode()).hexdigest()
+                                                [tuple(row) for row in extracted_rows], notes_revision], ensure_ascii=False).encode()).hexdigest()
     if lazy and previous and not force:
         if previous['signature'].startswith(work_signature + ':'):
             return json.loads(previous['data']), False
@@ -630,6 +632,10 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         new_rows = [{'session_id': sid, 'source': sid.split(':', 1)[0], 'occurred': indexed_at[sid], 'kind': 'model',
                      'data': '{}'} for sid in sorted(extracted.keys() - session_ids)]
         result = build(rows, versions, index, visible, clean, names, alternatives, extracted, project_id, new_rows)
+        for cwd in sorted({metadata[1] for metadata in versions.values() if metadata[1]}):
+            for note in notes.project_inputs(db, cwd):
+                result['inputs'].append(entry(note['path'], {'source': 'obsidian', 'session_id': 'obsidian',
+                    'ordinal': None, 'time': note['scanned']}, kind='笔记', description=note['title']))
         for key in ('inputs', 'deliverables', 'history'):
             paths = set()
             items = []

@@ -23,6 +23,7 @@ import packet
 import extraction
 import usage
 import health
+import notes
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -178,6 +179,7 @@ def connect():
     """)
     packet.schema(db)
     extraction.schema(db)
+    notes.schema(db)
     return db
 
 
@@ -375,11 +377,18 @@ def find(db, query, limit=5):
     coverage = {source: item["status"] for source, item in source_status().items() if item["status"] != "已索引"}
     if coverage:
         result["coverage"] = coverage
+    for match in notes.search(db, query, limit):
+        matches.append(match)
+        if response_size(result) > QUERY_BYTES:
+            matches.pop()
+            break
     try:
         results = archive("session", "search", "--in", "messages", "--exclude-system",
                           "--include-automated", "--include-children", "--include-one-shot",
                           "--limit", min(80, limit * 8), "--", query)
         for hit in results.get("matches", []):
+            if len(matches) >= limit:
+                break
             sid, ordinal = hit.get("session_id"), hit.get("ordinal")
             if not sid or sid in seen or ordinal is None:
                 continue
@@ -411,7 +420,7 @@ def find(db, query, limit=5):
         while matches and response_size(result) > QUERY_BYTES:
             matches.pop()
         return result
-    matches.sort(key=lambda item: item.get("project_id", item["session_id"]))
+    matches.sort(key=lambda item: item.get("project_id") or item.get("session_id") or item["path"])
     if not matches and not result["projects"]:
         result["status"] = "没命中"
     return result
@@ -1638,6 +1647,8 @@ def main():
     import_run = commands.add_parser('import-conversations', help='Import a locally saved chat export using AgentsView')
     import_run.add_argument('source', choices=IMPORT_SOURCES)
     import_run.add_argument('path', type=Path)
+    index_notes = commands.add_parser('index-obsidian', help='Index Markdown notes from an explicitly chosen vault')
+    index_notes.add_argument('path', type=Path)
     merging = commands.add_parser('merge-projects', help='Merge verified duplicates while retaining their names and IDs')
     merging.add_argument('project')
     merging.add_argument('duplicates', nargs='+')
@@ -1694,6 +1705,9 @@ def main():
             return int(bool(result['failed']))
         elif args.command == 'import-conversations':
             print(json_text(import_conversations(args.source, args.path.expanduser())))
+        elif args.command == 'index-obsidian':
+            result = notes.scan(db, args.path.expanduser(), clean)
+            print(json_text(result))
         elif args.command == 'merge-projects':
             print(json_text(merge_projects(db, args.project, args.duplicates, args.reason)))
         elif args.command == 'move-record':
