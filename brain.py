@@ -573,17 +573,6 @@ def project_contents(db, project, include_log=False):
     return sections, work_log
 
 
-def short_entry(entry, max_bytes):
-    text, _, reference = entry.rpartition(" — ")
-    source, _, evidence = reference.partition(" · ")
-    session, _, date = evidence.rpartition(" · ")
-    # Keep a recoverable session reference whenever the entry fits.
-    tail = f" — {source} {date[:10]} {session}" if session else ""
-    if len(tail.encode("utf-8")) + 35 > max_bytes:
-        tail = f" — {source} {date[:10]}" if session else ""
-    return clip_bytes(text or entry, max_bytes - len(tail.encode("utf-8"))) + tail
-
-
 def card_entry(entry):
     text, separator, reference = entry.rpartition(" — ")
     if not separator:

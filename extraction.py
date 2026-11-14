@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 7
+REVISION = 8
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -30,7 +30,10 @@ Use the user's ordinal for each rule, input, and confirmation. Use an assistant 
 Keep a single entry for a task's final version. Repeated work on the same event or company should use
 one project ID where the candidate names refer to the same effort. Rules must capture durable limits or
 output constraints, not general goals, ordinary requests, or facts about the project. List only the
-latest outstanding actions with clear evidence. Keep descriptions short and JSON concise."""
+latest outstanding actions with clear evidence. Keep descriptions short and JSON concise.
+Include the latest delivered usable result of each requested task even if the assistant did not say
+'final'. final means ready for the requested use at the end of that task, not signed or user-confirmed.
+A reply providing a ready-to-send text or a pass/fail result can itself be the delivery."""
 
 
 def schema(db):
