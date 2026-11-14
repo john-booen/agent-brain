@@ -1117,8 +1117,9 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
 def extract_packets(db, args):
     settings = config().get("packet_extraction", {})
     cap = settings.get("daily_token_cap", 100000)
-    if type(cap) is not int or cap <= 0:
-        raise ValueError("packet_extraction.daily_token_cap must be a positive integer")
+    window = settings.get("window_token_cap", cap)
+    if any(type(value) is not int or value <= 0 for value in (cap, window)):
+        raise ValueError("Packet extraction token caps must be positive integers")
     ids = args.session
     if not ids:
         with closing(sqlite3.connect((DATA / 'agentsview/sessions.db').as_uri() + '?mode=ro', uri=True)) as index:
@@ -1133,7 +1134,7 @@ def extract_packets(db, args):
                             "response_format": {"type": "json_object"}}}
     return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
                               lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),
-                              cap, args.force, args.limit)
+                              cap, args.force, args.limit, window)
 
 
 def chunks(messages, limit=4200):
@@ -1646,6 +1647,7 @@ def main():
     extract_run.add_argument('--session', action='append')
     extract_run.add_argument('--limit', type=int, default=5)
     extract_run.add_argument('--force', action='store_true')
+    extract_run.add_argument('--roster', type=Path, help='Local JSON array of selected session IDs')
     import_run = commands.add_parser('import-conversations', help='Import a locally saved chat export using AgentsView')
     import_run.add_argument('source', choices=IMPORT_SOURCES)
     import_run.add_argument('path', type=Path)
@@ -1702,6 +1704,13 @@ def main():
         elif args.command == 'extract-packets':
             if args.limit < 1:
                 raise ValueError('Set a positive extraction limit')
+            if args.roster:
+                roster = json.loads(args.roster.read_text())
+                if not isinstance(roster, list) or any(not isinstance(value, str) or not value for value in roster):
+                    raise ValueError('Roster must contain session IDs')
+                args.session = (args.session or []) + roster
+                if not args.session:
+                    raise ValueError('Roster is empty')
             result = extract_packets(db, args)
             print(json_text(result), flush=True)
             return int(bool(result['failed']))

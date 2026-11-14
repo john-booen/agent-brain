@@ -205,14 +205,18 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def reserve(db, sid, input_bytes, reserve_tokens, daily_cap):
+def reserve(db, sid, input_bytes, reserve_tokens, daily_cap, window_cap):
     db.execute('BEGIN IMMEDIATE')
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec='seconds')
+        window = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat(timespec='seconds')
         total = db.execute("""SELECT COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL
                      THEN input_tokens+output_tokens ELSE reserved_tokens END),0)
                      FROM packet_extraction_attempts WHERE at>=?""", (cutoff,)).fetchone()[0]
-        if total + reserve_tokens > daily_cap:
+        recent = db.execute("""SELECT COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+                      THEN input_tokens+output_tokens ELSE reserved_tokens END),0)
+                      FROM packet_extraction_attempts WHERE at>=?""", (window,)).fetchone()[0]
+        if total + reserve_tokens > daily_cap or recent + reserve_tokens > window_cap:
             db.rollback()
             return None
         cursor = db.execute("INSERT INTO packet_extraction_attempts(at,session_id,input_bytes,reserved_tokens,status) VALUES(?,?,?,?,?)",
@@ -224,7 +228,7 @@ def reserve(db, sid, input_bytes, reserve_tokens, daily_cap):
         raise
 
 
-def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5):
+def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5, window_cap=None):
     stats = dict(processed=0, cached=0, rejected=0, failed=0, missing=0, deferred=0, budget=False, rate_limited=False)
     path = Path(data) / 'agentsview/sessions.db'
     last_limited = db.execute("SELECT MAX(at) FROM packet_extraction_attempts WHERE status='rate_limited'").fetchone()[0]
@@ -256,7 +260,7 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
                 stats['cached'] += 1
                 continue
             size = len((PROMPT + payload).encode())
-            attempt = reserve(db, sid, size, size + MAX_OUTPUT_TOKENS, daily_cap)
+            attempt = reserve(db, sid, size, size + MAX_OUTPUT_TOKENS, daily_cap, window_cap or daily_cap)
             if attempt is None:
                 stats['budget'] = True
                 stats['deferred'] += 1
