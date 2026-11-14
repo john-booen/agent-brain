@@ -284,6 +284,21 @@ class PacketTest(unittest.TestCase):
         self.assertEqual(evidence[0]['text'], 'User selected: picked answer')
         self.assertEqual(evidence[1]['files'], ['research/fictional-report.md'])
 
+    def test_model_extraction_retains_inline_and_line_anchored_file_refs(self):
+        sid = 'codex:fictional-refs'
+        self.archive_messages(sid, 'Atlas', [('user', '<attachment>{"path":"/tmp/fixture.md","body":"private-source /tmp/private-body.md"}</attachment>'), ('assistant', """
+Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
+<tool_result>`research/private-tool.md`</tool_result>
+<oai-mem-citation>[memory](/tmp/private-memory.md)</oai-mem-citation>
+""")])
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            index.row_factory = sqlite3.Row
+            attachment, message = brain.extraction.transcript(index, sid, brain.visible, brain.packet.paths_in, brain.json_text)
+        self.assertEqual(attachment['files'], ['/tmp/fixture.md'])
+        self.assertNotIn('private-', brain.json_text(attachment))
+        self.assertEqual(set(message['files']), {'research/report.md', '/tmp/atlas.md'})
+        self.assertNotIn('private-', message['text'])
+
     def test_usage_log_contains_only_metadata(self):
         brain.usage.record(self.data, 'codex', 'get_project',
                            {'id': 'fictional'}, 'private card body', False, lambda _: 4)

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 10
+REVISION = 11
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -84,15 +84,28 @@ def transcript(index, sid, visible, paths_in, encode):
             text = visible({'role': 'user', 'dialogue_text': selected_answer(row['content'])})
         if not text:
             continue
-        # Keep ordinary turn text and file references. Attachments and tool contents are read locally.
-        links = re.findall(r'\]\(<?([^<>\r\n]+?\.[a-zA-Z0-9]{1,6})>?\)', text)
-        uploads = re.findall(r'<file_path>([^<>\r\n]+)</file_path>', text)
-        links = [link.removeprefix('computer://') for link in links]
-        paths = list(dict.fromkeys([*paths_in(text), *uploads, *(path for path in links if '://' not in path)]))[:12]
-        text = re.sub(r'<(attachment|file_contents|document_content|tool_result|tool_output)\b[^>]*>.*?</\1>',
+        # Keep only file references from attachments and omit tool bodies.
+        text = re.sub(r'<(file_contents|document_content|tool_result|tool_output)\b[^>]*>.*?</\1>',
                       '', text, flags=re.I | re.S)
         text = re.sub(r'(?ms)^\[(Thinking|Tool result|Tool output)\].*?^\[/\1\][ \t]*\n?', '', text)
+        text = re.sub(r'(?is)<oai-mem-citation>.*?</oai-mem-citation>', '', text)
         text = re.sub(r'(?ms)^\x60{3}(?:[\w-]*)[ \t]*\n.*?^\x60{3}[^\S\n]*$', '[code omitted]', text)
+        attachments = []
+        for match in re.finditer(r'(?is)<attachment\b[^>]*>(.*?)</attachment>', text):
+            try:
+                metadata = json.loads(match[1])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(metadata, dict) and isinstance(metadata.get('path'), str):
+                attachments.append(metadata['path'])
+        text = re.sub(r'(?is)<attachment\b[^>]*>.*?</attachment>', '', text).strip()
+        extensions = r'\.[a-zA-Z0-9]{1,6}(?::\d+)?'
+        links = re.findall(r'\]\(<?([^<>\r\n]+?' + extensions + r')>?\)', text)
+        uploads = re.findall(r'<file_path>([^<>\r\n]+)</file_path>', text)
+        inline = re.findall(r'`([^\x60\r\n]+?' + extensions + r')`', text)
+        refs = [re.sub(r':\d+$', '', value.removeprefix('computer://'))
+                for value in (*links, *(value for value in inline if '/' in value))]
+        paths = list(dict.fromkeys(path for path in (*attachments, *paths_in(text), *uploads, *refs) if '://' not in path))[:12]
         limit = 1400 if row['role'] == 'user' else 700
         if row['role'] == 'assistant' and not paths and len(text) < 45:
             continue
@@ -103,10 +116,14 @@ def transcript(index, sid, visible, paths_in, encode):
     if len(encode(messages).encode('utf-8')) > MAX_INPUT_BYTES:
         # Retain both ends and pick high-evidence middle turns before applying the byte limit.
         first = messages[:6]
-        rest = sorted(messages[6:], key=lambda row: (
+        recent_users = [row for row in messages[6:] if row['role'] == 'user']
+        recent_assistants = [row for row in messages[6:] if row['role'] == 'assistant']
+        recent = recent_users[-4:] + recent_assistants[-2:]
+        priority = {row['ordinal'] for row in recent}
+        rest = sorted((row for row in messages[6:] if row['ordinal'] not in priority), key=lambda row: (
             -row['text'].startswith('User selected:'), -bool(row.get('files')), -row['ordinal']))
         selected, size = [], 2
-        for row in first + rest:
+        for row in first + recent + rest:
             length = len(encode(row).encode('utf-8')) + 1
             if size + length <= MAX_INPUT_BYTES:
                 selected.append(row)
