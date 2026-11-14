@@ -1123,6 +1123,7 @@ def delivery_paths(session_id, ordinal):
 
 def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
                       session_id=None, ordinal=None, expected_sha256=None):
+    relocated = False
     if section and page is not None:
         raise ValueError('每次请选择章节或页码')
     if expected_sha256 is not None and not re.fullmatch(r'[0-9a-fA-F]{64}',expected_sha256):
@@ -1138,18 +1139,19 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         entries = [item for key in ('inputs', 'deliverables') for item in data[key] if item.get('path')]
         if session_id is not None:
             references, cwd = delivery_paths(session_id, ordinal)
-            source = [value for value in references if (
-                packet.available_path(value,cwd)==path or
-                Path(path).name==path and normalized(Path(value).name)==normalized(path))]
+            copies = {item['original_path']: item['path'] for item in entries if item.get('original_path')}
+            source = [(value, resolved) for value in references
+                      if path in ((resolved := packet.available_path(value,cwd)), copies.get(resolved))
+                      or Path(path).name==path and normalized(Path(value).name)==normalized(path)]
             matches = set()
             if len(source)==1:
-                linked = Path(source[0])
-                resolved = packet.available_path(source[0],cwd)
+                value, resolved = source[0]
+                linked = Path(value)
                 verified_matches = set()
                 for item in entries:
                     candidate = item['path']
                     ref = item['ref']
-                    exact = candidate==resolved
+                    exact = candidate==resolved or (resolved is not None and item.get('original_path')==resolved)
                     # Some clients report relative paths below the session working directory.
                     # Trust a suffix match only when this project already verified the exact source message.
                     verified = (ref['session_id']==session_id and ref['ordinal']==ordinal and ref.get('evidence_source')
@@ -1164,6 +1166,7 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
             if len(matches) != 1:
                 raise ValueError('该引用未指向唯一的登记文件，请核对交付消息或使用登记的完整路径')
             path = matches.pop()
+            relocated = copies.get(resolved) == path
         elif Path(path).name == path:
             # The overview omits long paths. A unique displayed name still opens only a registered file.
             name = normalized(path)
@@ -1195,6 +1198,8 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
     parts = file_text.extract(file, raw, section=section, page=page)
     body = clean('\n\n'.join(title + '\n' + text for title, text in parts)).strip()
     result = {'file': clip_bytes(file.name, 230), 'sha256':digest, 'text': '', 'next_offset': None}
+    if relocated:
+        result['registered_copy'] = True
     if not body:
         return {**result, 'status': '未提取到文本'}
     low, high = 0, min(max_chars, max(0, len(body) - offset))

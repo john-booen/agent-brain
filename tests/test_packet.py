@@ -287,6 +287,34 @@ fs.stat = async (file, ...args) => {
         with self.assertRaisesRegex(ValueError,'引用'):
             self.tool('read_file',**args,ordinal=1)
 
+    def test_read_file_follows_a_registered_copy_from_the_original_delivery(self):
+        original = self.root / 'old' / 'report.md'
+        copy = self.root / 'copy' / 'report.md'
+        other = self.root / 'other' / 'report.md'
+        for file in (copy, other):
+            file.parent.mkdir(parents=True)
+            file.write_text(f'Report in {file.parent.name}.')
+        sid = 'cowork:fictional-registered-copy'
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', f'Delivered [report]({original}).'),
+            ('user', f'Mentioned a different [{other.name}]({other}).'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  summary='Register the earlier result.', session_id=sid,
+                  deliverables=[{'path':str(original),'task':'Report','ordinal':0}])
+        self.tool('get_project', project='Atlas')
+        brain.register_path_relocation(self.db, str(original), str(copy), 'Verified existing copy.')
+        args = {'project':'Atlas','session_id':sid,'ordinal':0}
+        digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+        for path in (copy.name, str(original), str(copy)):
+            result = self.tool('read_file', **args, path=path, expected_sha256=digest)
+            self.assertTrue(result['registered_copy'])
+            self.assertIn('Report in copy.', result['text'])
+        with self.assertRaisesRegex(ValueError,'引用'):
+            self.tool('read_file', **args, path=str(other))
+        with self.assertRaisesRegex(ValueError,'指纹已变化'):
+            self.tool('read_file', **args, path=copy.name, expected_sha256='a'*64)
+
     def test_read_file_checks_fingerprint_before_returning_a_changed_version(self):
         file = self.root/'report.md'
         file.write_text('# Report\n'+'First edition. '*300)

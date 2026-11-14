@@ -13,6 +13,8 @@ Before editing an existing deliverable, use `read_file` locally to verify the re
 
 Pass `later_version.current_sha256` as `expected_sha256` when opening a file version just verified by recall. On pagination, pass the first `read_file` response's `sha256` with `next_offset` so pages stay on the same version. A mismatch requires rechecking the file and its history before editing.
 
+If `read_file` reports `registered_copy`, it opened the project's registered replacement for the path in the old message. Use the returned fingerprint to track the copy you read.
+
 For a registered JSON deliverable, pass the project, file, original assistant session and delivery ordinal. Use `section` for an exact top-level key such as `results`.
 
 Use whole-session message hits, nearby context, project references, structured user choices and file/version links to choose evidence. Wording by itself must not exclude evidence. Strip tool bodies, reasoning blocks and internal control messages. For an overwritten file, use the historical delivery references and check the current fingerprint before continuing.
