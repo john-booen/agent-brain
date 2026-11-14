@@ -583,6 +583,23 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertNotIn('inline_sections',rows[2])
         self.assertNotIn('PRIVATE_',str(rows))
 
+    def test_recall_recovers_a_short_task_delivery_and_its_request(self):
+        sid = 'cowork:fictional-short-task'
+        self.archive_messages(sid, 'Atlas', [
+            ('user','Atlas order workbook: translate the labels.'),
+            *[('assistant','') for _ in range(27)],
+            ('assistant','Translated the workbook. [Download](/tmp/orders.xlsx)'),
+        ])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.row_factory=sqlite3.Row
+            project=self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Workbook project.')['project_id']
+            _,evidence,_=brain.recall.evidence_package(self.db,index,project,'Which order workbook?',brain.visible,
+                                                       brain.packet.paths_in,brain.json_text,use_tags=False)
+        self.assertEqual({row['ordinal'] for row in evidence.values()},{0,28})
+        self.assertIn('/tmp/orders.xlsx', next(row['files'] for row in evidence.values() if row['role']=='assistant'))
+
     def test_recall_file_history_does_not_displace_the_best_message(self):
         sid='codex:fictional-repeated-file'
         version=self.root/'status.md'

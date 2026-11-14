@@ -260,6 +260,25 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
     for score, _, sid, _, tag in tags:
         for ordinal in tag['anchors']:
             found[sid][ordinal] = max(found[sid].get(ordinal,0),2+score*2)
+    # Short tasks often name the project only in the title and report a file at the end.
+    # Keep that handoff and its preceding request if the task text also matches the question.
+    for sid in metadata:
+        hits=found.get(sid)
+        if not hits or max(hits.values())<2:
+            continue
+        tail=index.execute("""SELECT max(ordinal) FROM messages WHERE session_id=?
+            AND role='assistant' AND is_system=0 AND length(coalesce(dialogue_text,content,''))>0""",(sid,)).fetchone()[0]
+        if tail is None or tail>100:
+            continue
+        rows=extraction.transcript(index,sid,visible,paths_in,encode,outbound=True,focused=True,
+                                   start=tail,end=tail)
+        if not rows or not relevance(rows[0]['text']) or not (rows[0].get('files') or rows[0].get('inline_sections')):
+            continue
+        hits[tail]=max(hits.get(tail,0), max(hits.values())//2+7)
+        previous=index.execute("""SELECT max(ordinal) FROM messages WHERE session_id=?
+            AND ordinal<? AND role='user' AND is_system=0""",(sid,tail)).fetchone()[0]
+        if previous is not None:
+            hits[previous]=max(hits.get(previous,0),hits[tail]-1)
     session_score = {sid:sum(sorted(scores.values(),reverse=True)[:12]) for sid,scores in found.items()}
     ranked = sorted(((score,session_score[sid],sid,ordinal) for sid in metadata for ordinal,score in found[sid].items()),
                     reverse=True)
