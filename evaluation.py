@@ -13,7 +13,8 @@ FIELDS = ('inputs', 'deliverables', 'rules', 'todos', 'attribution')
 
 
 def anchor(item):
-    return (item['session'], item['ordinal'], item.get('path'))
+    path = item.get('path')
+    return (item['session'], item['ordinal'], Path(path).name if path else None)
 
 
 def prediction(db, case):
@@ -112,9 +113,10 @@ def main():
         cases = json.loads(args.gold.read_text())['projects']
         tokenizer = None
         if args.tokenizer:
-            import tiktoken
-            encoding = tiktoken.get_encoding(args.tokenizer)
-            tokenizer = lambda text: len(encoding.encode_ordinary(text))
+            if args.tokenizer == 'o200k_base':
+                tokenizer = brain.usage.token_counter(brain.DATA)
+            if not tokenizer:
+                parser.error('install the local tokenizer cache before requesting token counts')
         with brain.connect() as db:
             report = score(cases, lambda item: prediction(db, item), lambda item: measure_card(db, item, tokenizer))
     body = json.dumps(report, ensure_ascii=False, indent=2)

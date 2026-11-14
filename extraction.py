@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 3
+REVISION = 4
 MAX_INPUT_BYTES = 60_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
@@ -78,7 +78,9 @@ def transcript(index, sid, visible, paths_in, encode):
             continue
         # Keep ordinary turn text and file references. Attachments and tool contents are read locally.
         links = re.findall(r'\]\(<?([^<>\r\n]+?\.[a-zA-Z0-9]{1,6})>?\)', text)
-        paths = list(dict.fromkeys([*paths_in(text), *(path for path in links if '://' not in path)]))[:12]
+        uploads = re.findall(r'<file_path>([^<>\r\n]+)</file_path>', text)
+        links = [link.removeprefix('computer://') for link in links]
+        paths = list(dict.fromkeys([*paths_in(text), *uploads, *(path for path in links if '://' not in path)]))[:12]
         text = re.sub(r'<(attachment|file_contents|document_content|tool_result|tool_output)\b[^>]*>.*?</\1>',
                       '', text, flags=re.I | re.S)
         text = re.sub(r'(?ms)^\[(Thinking|Tool result|Tool output)\].*?^\[/\1\][ \t]*\n?', '', text)
