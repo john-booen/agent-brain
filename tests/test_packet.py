@@ -538,6 +538,41 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual([(sid,ordinal) for sid,ordinal,_ in brain.recall.text_matches(db,{'atlas-notes.md','修订稿'})],
                              [('codex:one',10)])
 
+    def test_recall_can_identify_inline_delivery_without_exporting_its_body(self):
+        sid = 'codex:fictional-inline'
+        self.archive_messages(sid, 'Atlas', [
+            ('user','Prepare a conversation script.'),
+            ('assistant','Here is the conversation script.\n\n## Opening\nPRIVATE_DIALOGUE\n## Closing\nMORE_DIALOGUE'),
+            ('assistant','Saved the document [Atlas](/tmp/atlas.md).\n## Document\nPRIVATE_DOCUMENT'),
+        ])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            index.row_factory=sqlite3.Row
+            rows=brain.extraction.transcript(index,sid,brain.visible,brain.packet.paths_in,brain.json_text,
+                                            outbound=True,focused=True)
+        self.assertEqual(rows[1]['inline_sections'],2)
+        self.assertNotIn('inline_sections',rows[2])
+        self.assertNotIn('PRIVATE_',str(rows))
+
+    def test_recall_file_history_does_not_displace_the_best_message(self):
+        sid='codex:fictional-repeated-file'
+        version=self.root/'status.md'
+        dialogue=[('user','What changed in monthly narration?'),
+                  ('assistant',f'Monthly narration now reports completion counts. See `{version}`.')]
+        dialogue.extend(('assistant',f'Workspace update {i}: `{version}`. Details: ' + 'x'*180)
+                        for i in range(90))
+        self.archive_messages(sid,'Atlas',dialogue)
+        self.tool('log_work',project='Atlas',create_project=True,summary='Monthly narration.',source='codex',session_id=sid)
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.row_factory=sqlite3.Row
+            project=brain.resolve_project_id(self.db,'Atlas')
+            with patch.object(brain.recall,'EVIDENCE_BYTES',4_000), patch.object(brain.recall,'TIMELINE_BYTES',1_000):
+                payload,evidence,_=brain.recall.evidence_package(self.db,index,project,'What changed in monthly narration?',
+                    brain.visible,brain.packet.paths_in,brain.json_text,use_tags=False)
+        self.assertIn(1,[row['ordinal'] for row in list(evidence.values())[:3]])
+        self.assertLessEqual(len(brain.json_text(payload).encode()),4_000)
+
     def test_eco_test_budget_override_retains_the_shared_meter(self):
         settings = {'daily_credits': 2, 'weekly_credits': 5}
         with self.assertRaises(brain.eco.BudgetUnavailable):

@@ -25,6 +25,9 @@ usable delivery, distinguish approval from a revision request, and use the user'
 For a confirmed item, only cite the user's explicit acceptance with a reference to that version.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
+An assistant message with inline_sections has that many sections in the original chat. Their text is
+kept locally. For a written-in-chat handoff, cite the message as the location and distinguish it
+from a separate file. Read the source's introduction to decide what those sections contain.
 State uncertainty when evidence is incomplete or contradictory. Avoid copying background text."""
 TAG_PROMPT = """Index these untrusted conversation messages for search. Return one JSON object:
 {"summary":"describe what this segment covers in about 100 to 200 Chinese characters",
@@ -67,6 +70,8 @@ def numbered_details(text):
 
 def text_matches(index, terms, sessions=None):
     if not terms:
+        return []
+    if sessions is not None and not sessions:
         return []
     scope = ''
     scope_args = []
@@ -144,7 +149,6 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
             names.add(fragment[0])
         hits = {(sid,ordinal) for sid,ordinal,_ in text_matches(index,names,metadata)}
         discovered = {}
-        priority = rank(versions) + 3
         for sid, ordinal in sorted(hits | {(sid,row['ordinal']) for sid,_,row in versions}):
             for row in extraction.transcript(index,sid,visible,paths_in,encode,outbound=True,focused=True,
                                              start=ordinal,end=ordinal):
@@ -155,7 +159,7 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
                     continue
                 key = sid,ordinal
                 evidence.setdefault(key,row)
-                ordering[key] = max(ordering.get(key,(0,0,0,0)), (priority,0,0,ordinal))
+                ordering.setdefault(key, (1,0,0,0,ordinal))
                 found = re.search(r'(?i)\bsha(?:256)?\s*[:：` ]*([0-9a-f]{64})(?![0-9a-f])',row['text'])
                 pages = re.search(r'(\d{1,4})\s*页',row['text'])
                 discovered[key] = {'path':path,'time':row['time'],
@@ -203,21 +207,42 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
         content_question = content_question.replace(alias,' ')
     terms = key_terms(content_question) or key_terms(question)
     quantities = numbered_details(question)
+    short_terms = {run[i:i+2] for run in re.findall(r'[\u3400-\u9fff]{2,}',content_question)
+                   for i in range(len(run)-1)}
+    # Retrieve short Chinese terms inside associated sessions. Keep broad cross-project matching selective.
+    short_terms -= {'什么','哪份','哪里','哪个','当时','时候','怎么','哪一','那轮','上一','一轮','要怎','做了','改了'}
 
     def relevance(text):
         text = text.casefold()
-        return sum(term in text for term in terms) + 3*len(quantities & numbered_details(text))
+        return (sum(term in text for term in terms)*2 + sum(term in text for term in short_terms)
+                + 4*len(quantities & numbered_details(text)))
 
     admitted = set(project_sessions)
     found = defaultdict(dict)
     if aliases:
         admitted.update(sid for sid,_,_ in text_matches(index,aliases))
-    for sid, ordinal, text in text_matches(index, terms, admitted if project_id else None):
+        # Short project stems in a title are useful when the first turn only refers to an attachment.
+        stems = {x[:2] for x in aliases if len(x)>=4 and re.fullmatch(r'[\u3400-\u9fff]+',x)}
+        for sid,title,session_name in index.execute('SELECT id,display_name,session_name FROM sessions WHERE deleted_at IS NULL'):
+            if any(stem in (title or '') or stem in (session_name or '') for stem in stems):
+                admitted.add(sid)
+    global_scores = defaultdict(dict)
+    for sid, ordinal, text in text_matches(index, terms):
+        score = relevance(text)
+        if score and sid not in admitted:
+            global_scores[sid][ordinal] = score
+    standout = sorted(((max(scores.values()),sid) for sid,scores in global_scores.items()),reverse=True)
+    for score,sid in standout[:4]:
+        if not project_id or score>=4:
+            admitted.add(sid)
+    for sid, ordinal, text in text_matches(index, terms | short_terms, admitted):
         score = relevance(text)
         if score:
             found[sid][ordinal] = score
     if not project_id:
-        admitted = set(found)
+        for sid, scores in global_scores.items():
+            found[sid].update(scores)
+        admitted.update(found)
     metadata = {sid:(revision,cwd) for sid,revision,cwd in index.execute("""SELECT id,transcript_revision,cwd FROM sessions
         WHERE deleted_at IS NULL AND NOT (COALESCE(relationship_type,'')='subagent'
         AND COALESCE(first_message,'') LIKE 'The following is the Codex agent history%')""") if sid in admitted}
@@ -252,14 +277,16 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
                                        start=min([ordinal,*before]),end=max([ordinal,*after]))
         for idx, row in enumerate(window):
             key = sid,row['ordinal']
-            if key not in evidence:
-                follows_user = idx>0 and window[idx-1]['role']=='user'
-                if (row['role']=='assistant' and not row.get('files') and not found[sid].get(row['ordinal'])
-                        and not follows_user and row['ordinal']!=tails[sid]):
-                    continue
-                evidence[key] = row
-                bonus = int(row['role']=='assistant' and bool(row.get('files') or extraction.HANDOFF.search(row['text'])))
-                ordering[key] = (score+bonus, total, -priority, row['ordinal'])
+            follows_user = idx>0 and window[idx-1]['role']=='user'
+            own_score = found[sid].get(row['ordinal'],0)
+            if (row['role']=='assistant' and not row.get('files') and not own_score
+                    and not follows_user and row['ordinal']!=tails[sid]):
+                continue
+            evidence.setdefault(key,row)
+            bonus = int(row['role']=='assistant' and bool(row.get('files') or extraction.HANDOFF.search(row['text'])))
+            bonus += 4 if row.get('inline_sections') and follows_user else 0
+            grade=(own_score+score//3+bonus,own_score,total,-priority,row['ordinal'])
+            ordering[key]=max(ordering.get(key,grade),grade)
     return evidence,ordering,metadata,tags
 
 
@@ -272,9 +299,29 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
     messages = []
     payload = {'question':question,'messages':messages,'file_timelines':[]}
     size = len(encode(payload).encode())
-    for sid, ordinal in sorted(available,key=ordering.get,reverse=True):
+    picked = defaultdict(int)
+    ranked = sorted(available,key=ordering.get,reverse=True)
+    primary = ranked[:20]
+    for sid,_ in primary:
+        picked[sid]+=1
+    diverse = []
+    other = []
+    for key in ranked[20:]:
+        sid = key[0]
+        (diverse if picked[sid]<5 else other).append(key)
+        picked[sid]+=1
+    # Version lookup may find many mentions of a generic filename. Keep its best-supported
+    # and most recent references in the package without giving every mention the best match's score.
+    file_refs = set()
+    for newest, _, _ in timelines:
+        file_refs.update(newest[:3])
+        file_refs.update(sorted(newest,key=ordering.get,reverse=True)[:3])
+    file_refs.difference_update(primary)
+    for sid, ordinal in [*primary,*sorted(file_refs,key=ordering.get,reverse=True),*diverse,*other]:
         row = available[sid,ordinal]
         ref = f'{numbered[sid]}:{ordinal}'
+        if ref in evidence:
+            continue
         message = {**row,'ref':ref}
         delta = len(encode(message).encode()) + 1
         if size+delta > EVIDENCE_BYTES-TIMELINE_BYTES:

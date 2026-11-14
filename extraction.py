@@ -142,8 +142,11 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused
                 for value in (*links, *(value for value in inline if '/' in value))]
         paths = list(dict.fromkeys(path for path in (*attachments, *paths_in(text), *uploads, *refs) if '://' not in path))[:12]
         limit = 1400 if row['role'] == 'user' else 700
+        chat_sections = 0
         if outbound and focused and row['role'] == 'assistant':
             # Retain the assistant's handoff excerpt. Structured document and tool bodies stay local.
+            if not paths:
+                chat_sections = len(re.findall(r'(?m)^#{1,6}\s+\S', text))
             text = re.split(r'\n\s*(?:#{1,6}\s|>|\||---+\s*\n|(?:文件)?正文[：:])', text, maxsplit=1)[0]
             text = re.sub(r'(?:“[^”]*”|「[^」]*」)', ' ', text)[:600]
             limit = 600
@@ -162,6 +165,8 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused
         entry = {'ordinal': row['ordinal'], 'role': row['role'], 'text': text_excerpt(text, limit)}
         if focused:
             entry['time'] = row['timestamp']
+            if chat_sections:
+                entry['inline_sections'] = chat_sections
         if paths:
             entry['files'] = paths
         messages.append(entry)
