@@ -663,8 +663,9 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     if lazy and previous and not force:
         if previous['signature'].startswith(work_signature + ':'):
             cached = json.loads(previous['data'])
-            if not any(item.get('ref', {}).get('pending') for key in ('inputs', 'deliverables', 'rules', 'history')
-                       for item in cached[key]):
+            evidence = (item for key in ('inputs', 'deliverables', 'rules', 'history') for item in cached[key])
+            # A confirmation depends on the indexed conversation, even without a new work log.
+            if not any(item.get('pinned') or item.get('ref', {}).get('pending') for item in evidence):
                 return cached, False
     path = data_dir / 'agentsview' / 'sessions.db'
     index = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=5) if path.is_file() else None

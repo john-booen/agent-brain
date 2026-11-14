@@ -445,6 +445,28 @@ fs.stat = async (file, ...args) => {
         self.assertIn('用户确认', confirmed)
         self.assertIn(sid + '#4', confirmed)
 
+    def test_cached_approval_checks_the_latest_index_revision(self):
+        path = self.root / 'checklist.md'
+        path.write_text('# Checklist\nOwner is Amy.')
+        sid = 'codex:fictional-cached-approval'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', 'Draft the Atlas checklist.'),
+            ('assistant', f'已交付：{path}'),
+            ('user', '这份作为终版。'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  session_id=sid, summary='Reviewed the checklist.',
+                  deliverables=[{'path':str(path),'task':'Checklist','confirmed':True,'ordinal':2}])
+        def delivery():
+            return self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('用户确认', delivery())
+        with patch.object(brain.packet, 'build', side_effect=AssertionError('must reuse unchanged packet')):
+            self.assertIn('用户确认', delivery())
+        with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
+            index.execute("UPDATE messages SET content='还要修改。', dialogue_text='还要修改。' WHERE ordinal=2")
+            index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
+        self.assertIn('最后交付待确认', delivery())
+
     def test_work_log_citations_use_source_and_mark_unverified_items(self):
         sid = 'cowork:fictional-source-date'
         report = self.root / 'export' / 'report.md'
