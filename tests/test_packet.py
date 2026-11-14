@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -272,6 +273,19 @@ class PacketTest(unittest.TestCase):
         assert 'private card body' not in body
         self.assertEqual(json.loads(body)['tokens'], 4)
         self.assertTrue(json.loads(body)['hit'])
+
+    def test_weekly_report_excludes_test_calls_and_reports_missing_measurement(self):
+        self.tool('log_work', project='Atlas', create_project=True, source='codex', summary='Initial record.')
+        records = [
+            {'at':'2026-11-10T00:00:00+00:00', 'origin':'test', 'source':'codex',
+             'tool':'get_project','hit':True,'tokens':99},
+            {'at':'2026-11-10T00:01:00+00:00', 'origin':'client', 'source':'codex',
+             'tool':'get_project','hit':True},
+        ]
+        (self.data / 'usage.jsonl').write_text('\n'.join(map(json.dumps, records)))
+        dest = brain.usage.weekly(self.db, self.data, date(2026, 11, 16))
+        self.assertIn('| codex | get_project | 1 | 1 | 0 | 0 |', (dest / '本周使用情况.md').read_text())
+        self.assertTrue((dest / '本周各项目动态.md').is_file())
 
     def test_health_reports_collection_failure_and_backs_up_sqlite(self):
         (self.data / 'coverage.json').write_text(json.dumps({'exit': 1, 'packetRefresh': {'status': 'failed'}}))
