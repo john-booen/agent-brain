@@ -521,7 +521,7 @@ def reference(row, ordinal=None, time=None):
     return f"{row['source']} · {session}{anchor} · {time or row['occurred']}"
 
 
-def project_contents(db, project, include_log=False):
+def project_contents(db, project, include_log=False, model_sessions=()):
     rows = db.execute("""
         SELECT w.*, e.reason AS excluded_reason, m.reason AS moved_reason FROM work w
         LEFT JOIN project_record_exclusions e ON e.work_id=w.id
@@ -543,7 +543,8 @@ def project_contents(db, project, include_log=False):
                 work_log.append(entry)
             superseded.append(entry)
             continue
-        timeline.append(f"- {data['summary']} — {label}")
+        if row['kind'] != 'summary' or row['session_id'] not in model_sessions:
+            timeline.append(f"- {data['summary']} — {label}")
         if include_log:
             reason = data.get("reason") or project["reason"]
             work_log.extend([f"## {row['occurred']} · {row['source']}", "", f"{data['summary']} — {label}",
@@ -645,14 +646,14 @@ def get_project(db, project, section=None, offset=0):
         row = next((item for item in rows if item["id"] == alias_id), None)
     if row is None:
         return {"status": "没命中", **find_project(db, project), **packet_coverage()}
-    sections, _ = project_contents(db, row)
     data, _ = packet.load(db, DATA, row["id"], visible, clean, lazy=True)
+    sections, _ = project_contents(db, row, model_sessions=set(data.get('model_sessions', ())))
     for name in PACKET_FIELDS:
         sections[name] = [packet_item(db, item, name, compact=section is None) for item in data[name]]
     sections['todos'] = [packet_item(db, item, 'todos', compact=section is None) for item in data.get('model_todos', [])] + sections['todos']
     if outcomes := data.get('model_outcomes'):
-        sections['timeline'] = [packet_item(db, item, 'timeline', compact=section is None)
-                                for item in sorted(outcomes, key=lambda item: item['ref']['time'], reverse=True)] + sections['timeline']
+        modeled = [packet_item(db, item, 'timeline', compact=section is None) for item in outcomes]
+        sections['timeline'] = sorted([*modeled, *sections['timeline']], key=lambda item: item.rsplit(' · ', 1)[-1], reverse=True)
     sections['history'] = [packet_item(db, item, 'history') for item in data['history']] + sections['history']
     if section:
         return project_details(row, section, sections.get(section, []), offset)
