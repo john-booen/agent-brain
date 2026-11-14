@@ -28,18 +28,14 @@ def prediction(db, case):
             items = [item for item in items if item.get('pinned') or item.get('final')]
         result[field] = [{'session': item['ref']['session_id'], 'ordinal': item['ref']['ordinal'],
                           'path': item.get('original_path', item.get('path'))} for item in items]
-    result['attribution'] = []
+    result['attribution'] = [{'session': item['ref']['session_id'], 'ordinal': item['ref']['ordinal']}
+                             for item in data.get('model_outcomes', [])]
+    with_model = set(data.get('model_sessions', ()))
     for row in brain.packet.work_rows(db, project):
-        if row['session_id'] is None:
-            continue
-        record = db.execute('SELECT data FROM packet_extractions WHERE session_id=?', (row['session_id'],)).fetchone()
-        if record:
-            result['attribution'].extend({'session': row['session_id'], 'ordinal': item['ordinal']}
-                                         for item in json.loads(record[0])['projects'] if item['id'] == project)
-        else:
-            ordinal = json.loads(row['data']).get('ordinal')
-            if ordinal is not None:
-                result['attribution'].append({'session': row['session_id'], 'ordinal': ordinal})
+        sid = row['session_id']
+        ordinal = json.loads(row['data']).get('ordinal')
+        if sid is not None and sid not in with_model and ordinal is not None:
+            result['attribution'].append({'session': sid, 'ordinal': ordinal})
     return result
 
 

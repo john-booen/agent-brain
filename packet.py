@@ -11,7 +11,7 @@ import file_text
 import notes
 
 
-VERSION = 22
+VERSION = 23
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -566,6 +566,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
     result['extraction'] = '混合' if modeled_sessions and set(versions) - modeled_sessions else '模型核对' if modeled_sessions else '规则推断'
     result['model_todos'] = todos
     result['model_outcomes'] = outcomes
+    result['model_sessions'] = sorted(modeled_sessions)
     return result
 
 
