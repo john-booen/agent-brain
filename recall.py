@@ -734,7 +734,11 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
                 item['later_version']['reported_format_quotes'] = later['reported_format_quotes']
             if later['current_matches_reported_hash'] is not None:
                 item['later_version']['current_matches_reported_hash'] = later['current_matches_reported_hash']
-        item['text']=extraction.text_excerpt(row['text'],140 if position-offset<3 else 75)
+        excerpt_limit = 140 if position-offset<3 else 75
+        if row.get('later_version') and later.get('reported_format_quotes'):
+            # The version note already carries exact format quotes from both deliveries.
+            excerpt_limit = 28
+        item['text']=extraction.text_excerpt(row['text'],excerpt_limit)
         sessions = {**result['sessions'],ref:sid}
         if row.get('later_version'):
             sessions[later_ref]=later_sid
