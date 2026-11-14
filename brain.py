@@ -1654,7 +1654,8 @@ def main():
     moving.add_argument('work_id')
     moving.add_argument('project')
     moving.add_argument('--reason', required=True)
-    commands.add_parser('merge-candidates', help='List duplicate candidates with shared evidence, without merging')
+    candidates_run = commands.add_parser('merge-candidates', help='List duplicate candidates with shared evidence, without merging')
+    candidates_run.add_argument('--active', action='store_true', help='Check recent projects and near-matching names')
     relocation = commands.add_parser('register-path', help='Link an existing packet reference to a verified copy')
     relocation.add_argument('old_path')
     relocation.add_argument('path')
@@ -1724,7 +1725,7 @@ def main():
         elif args.command == 'move-record':
             print(json_text(move_project_record(db, args.work_id, args.project, args.reason)))
         elif args.command == 'merge-candidates':
-            print(json_text(packet.merge_candidates(db)))
+            print(json_text(packet.merge_candidates(db, active_only=args.active)))
         elif args.command == 'register-path':
             print(json_text(register_path_relocation(db, args.old_path, args.path, args.reason)))
         else:

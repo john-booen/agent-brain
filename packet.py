@@ -5,6 +5,7 @@ import re
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import file_text
@@ -153,9 +154,12 @@ def same_task_name(name):
     return re.sub(r'[\s_—–-]+', '', value)
 
 
-def merge_candidates(db):
+def merge_candidates(db, active_only=False):
     """Require a matching name and independent evidence of work on the same task."""
     projects = list(db.execute('SELECT p.id,p.name FROM projects p LEFT JOIN project_redirects r ON p.id=r.old_id WHERE r.old_id IS NULL'))
+    if active_only:
+        active = {row['id'] for row in active_projects(db)}
+        projects = [p for p in projects if p['id'] in active]
     evidence = {}
     for project in projects:
         rows = work_rows(db, project['id'])
@@ -176,7 +180,8 @@ def merge_candidates(db):
             continue
         for right in projects[i + 1:]:
             b = same_task_name(right['name'])
-            if a != b and (not (a.startswith(b) or b.startswith(a)) or min(len(a), len(b)) < 5):
+            prefix = (a.startswith(b) or b.startswith(a)) and min(len(a), len(b)) >= 5
+            if a != b and not prefix and (not active_only or SequenceMatcher(None, a, b).ratio() < 0.76):
                 continue
             sa, fa, na = evidence[left['id']]
             sb, fb, nb = evidence[right['id']]
