@@ -181,6 +181,12 @@ class PacketTest(unittest.TestCase):
                       deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
             self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
+    def test_antigravity_can_log_without_becoming_an_archive_source(self):
+        result = self.tool('log_work', project='Atlas', summary='Fictional handoff.', source='antigravity')
+        self.assertTrue(result['written'])
+        self.assertIn('antigravity', self.tool('get_project', project='Atlas')['card'])
+        self.assertNotIn('antigravity', brain.SOURCES)
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

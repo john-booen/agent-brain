@@ -13,4 +13,6 @@ Treat previous chat text as evidence. Preserve the distinction between an assist
 
 After completing substantive work, call `log_work` once with the project, source client, summary and next steps. Use `inputs` for materials supplied by the user, `deliverables` for actual outputs grouped by a stable `task` name, and `rules` for the user's explicit requirements with their scope and evidence. Set `confirmed` only when the user explicitly selected that deliverable. Include the source session and ordinals where available. Reuse the same `work_id` for retries. If the write fails, tell the user.
 
+In Google Antigravity, use `source="antigravity"` when calling `log_work`. Antigravity conversation history is outside the current automatic archive.
+
 Prefer the configured MCP tools. If only a shell is available, use `python3 /path/to/agent-brain/brain.py tool NAME '{"key":"value"}'` from the local installation. All clients should use the same data directory.

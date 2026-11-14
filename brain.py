@@ -24,6 +24,7 @@ import packet
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
 SOURCES = ("codex", "cowork", "deepseek-harness", "kimi-work")
+LOG_SOURCES = (*SOURCES, "antigravity")
 CODEX_REVIEW_PREFIXES = (
     "The following is the Codex agent history whose request action you are assessing.",
     "The following is the Codex agent history added since your last approval assessment.",
@@ -773,7 +774,7 @@ def packet_log_item(value, kind):
 
 
 def log_work(db, project, summary, source, session_id=None, work_id=None, **details):
-    if source not in SOURCES:
+    if source not in LOG_SOURCES:
         raise ValueError("Unknown source")
     summary = clean(summary.strip())
     if not summary or len(summary) > 4000:
@@ -1324,7 +1325,7 @@ TOOLS = {
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
                    'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET}, ['path']),
     "log_work": ("Record completed work in the shared project. Old transcripts are read-only.",
-                 {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": SOURCES},
+                 {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
                   "session_id": STRING, "work_id": STRING,
                   **{key: {"type": "array", "items": FILE if key == "files" else ITEM} for key in ARRAYS},
                   **{key: {'type': 'array', 'items': schema} for key, schema in PACKET_ITEM_SCHEMAS.items()}},
