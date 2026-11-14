@@ -1142,7 +1142,7 @@ def extract_packets(db, args):
                             "response_format": {"type": "json_object"}}}
     return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
                               lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),
-                              cap, args.force, args.limit, window)
+                              cap, args.force, args.limit, window, usage.token_counter(DATA))
 
 
 def chunks(messages, limit=4200):

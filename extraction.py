@@ -228,7 +228,8 @@ def reserve(db, sid, input_bytes, reserve_tokens, daily_cap, window_cap):
         raise
 
 
-def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5, window_cap=None):
+def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5, window_cap=None,
+            estimate_tokens=None):
     stats = dict(processed=0, cached=0, rejected=0, failed=0, missing=0, deferred=0, budget=False, rate_limited=False)
     path = Path(data) / 'agentsview/sessions.db'
     last_limited = db.execute("SELECT MAX(at) FROM packet_extraction_attempts WHERE status='rate_limited'").fetchone()[0]
@@ -260,7 +261,8 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
                 stats['cached'] += 1
                 continue
             size = len((PROMPT + payload).encode())
-            attempt = reserve(db, sid, size, size + MAX_OUTPUT_TOKENS, daily_cap, window_cap or daily_cap)
+            reserved_input = min(size, estimate_tokens(PROMPT + payload) * 2 + 256) if estimate_tokens else size
+            attempt = reserve(db, sid, size, reserved_input + MAX_OUTPUT_TOKENS, daily_cap, window_cap or daily_cap)
             if attempt is None:
                 stats['budget'] = True
                 stats['deferred'] += 1
