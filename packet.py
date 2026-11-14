@@ -10,7 +10,7 @@ from pathlib import Path
 import file_text
 
 
-VERSION = 20
+VERSION = 21
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -374,8 +374,10 @@ def finish_entries(inputs, deliveries, rules, approvals):
             'rules': current[:10], 'history': history}
 
 
-def add_extracted(project, row, versions, inputs, deliveries, rules, todos):
+def add_extracted(project, row, versions, inputs, deliveries, rules, todos, outcomes):
     cwd = versions[row['session_id']][1]
+    message_time = project.get('time')
+    outcomes.append({'text': project['summary'], 'ref': citation(row, project['ordinal'], message_time), 'modeled': True})
     for item in project['inputs']:
         ref = citation(row, item['ordinal'])
         inputs.append(entry(available_path(item.get('path'), cwd), ref, text=item.get('text'), modeled=True))
@@ -392,7 +394,7 @@ def add_extracted(project, row, versions, inputs, deliveries, rules, todos):
     todos.extend({**item, 'ref': citation(row, item['ordinal']), 'modeled': True} for item in project['todos'])
 
 
-def build(rows, versions, index, visible, clean, names, project_terms_by_session, extracted=None, project_id=None):
+def build(rows, versions, index, visible, clean, names, project_terms_by_session, extracted=None, project_id=None, extra_rows=None):
     inputs, deliveries, rules, approvals = [], [], [], []
     sessions = defaultdict(list)
     delivery_by_name = defaultdict(set)
@@ -401,9 +403,10 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
     folders = set()
     user_attached = set()
     todos = []
+    outcomes = []
     modeled_sessions = set()
     extracted = extracted or {}
-    for row in rows:
+    for row in [*rows, *(extra_rows or [])]:
         data = json.loads(row['data'])
         sid = row['session_id']
         cwd = versions.get(sid, ('', None))[1]
@@ -411,9 +414,9 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
             if sid not in modeled_sessions:
                 for project in extracted[sid]:
                     if project['id'] == project_id:
-                        add_extracted(project, row, versions, inputs, deliveries, rules, todos)
+                        add_extracted(project, row, versions, inputs, deliveries, rules, todos, outcomes)
                 modeled_sessions.add(sid)
-            if row['kind'] == 'summary':
+            if row['kind'] != 'log':
                 continue
         if sid in versions and not (IRRELEVANT.search(data['summary']) and not data.get('files')):
             sessions[sid].append((row, data))
@@ -561,15 +564,21 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
     result = finish_entries(inputs, deliveries, rules, approvals)
     result['extraction'] = '混合' if modeled_sessions and set(versions) - modeled_sessions else '模型核对' if modeled_sessions else '规则推断'
     result['model_todos'] = todos
+    result['model_outcomes'] = outcomes
     return result
 
 
 def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     rows = work_rows(db, project_id)
     session_ids = {row['session_id'] for row in rows if row['session_id']}
-    extracted_rows = [row for row in db.execute(
-        'SELECT session_id, revision, extracted_at FROM packet_extractions WHERE session_id IN (%s)' %
-        ','.join('?' for _ in session_ids), tuple(sorted(session_ids)))] if session_ids else []
+    aliases = {row[0] for row in db.execute('SELECT old_id FROM project_redirects WHERE project_id=?', (project_id,))}
+    lookup_ids = sorted({project_id, *aliases})
+    placeholders = ','.join('?' for _ in lookup_ids)
+    extracted_rows = db.execute(f"""SELECT e.session_id,e.revision,e.extracted_at FROM packet_extractions e
+        WHERE EXISTS (SELECT 1 FROM work w WHERE w.session_id=e.session_id AND w.project_id IN ({placeholders}))
+              OR e.session_id IN (SELECT a.session_id FROM packet_extraction_assignments a
+                                  WHERE a.project_id IN ({placeholders})) ORDER BY e.session_id""",
+        (*lookup_ids, *lookup_ids)).fetchall()
     previous = db.execute('SELECT data, signature FROM project_packets WHERE project_id=?', (project_id,)).fetchone()
     relocations = {row[0]: row[1] for row in db.execute('SELECT old_path,path FROM packet_path_relocations ORDER BY old_path')}
     work_signature = hashlib.sha256(json.dumps([VERSION, [tuple(row) for row in rows], relocations,
@@ -583,7 +592,7 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         if index:
             index.row_factory = sqlite3.Row
             index.execute('BEGIN')
-        sessions = session_ids
+        sessions = session_ids | {row['session_id'] for row in extracted_rows}
         versions = source_versions(index, sessions)
         names = [row[0] for row in db.execute('SELECT name FROM projects WHERE id=? UNION SELECT alias FROM project_aliases WHERE project_id=?',
                                              (project_id, project_id))]
@@ -604,8 +613,11 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
             sid = item['session_id']
             if sid not in versions:
                 continue
-            raw = db.execute('SELECT data FROM packet_extractions WHERE session_id=?', (sid,)).fetchone()[0]
-            value = json.loads(raw)
+            raw = db.execute('SELECT data FROM packet_extractions WHERE session_id=? AND revision=?',
+                             (sid, item['revision'])).fetchone()
+            if not raw:
+                continue
+            value = json.loads(raw[0])
             if value.get('archive_revision') == versions[sid][0]:
                 for project in value['projects']:
                     resolved = project['id']
@@ -614,7 +626,10 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
                         resolved = redirect[0]
                     project['id'] = resolved
                 extracted[sid] = value['projects']
-        result = build(rows, versions, index, visible, clean, names, alternatives, extracted, project_id)
+        indexed_at = {row['session_id']: row['extracted_at'] for row in extracted_rows}
+        new_rows = [{'session_id': sid, 'source': sid.split(':', 1)[0], 'occurred': indexed_at[sid], 'kind': 'model',
+                     'data': '{}'} for sid in sorted(extracted.keys() - session_ids)]
+        result = build(rows, versions, index, visible, clean, names, alternatives, extracted, project_id, new_rows)
         for key in ('inputs', 'deliverables', 'history'):
             paths = set()
             items = []

@@ -38,6 +38,9 @@ def schema(db):
       CREATE TABLE IF NOT EXISTS packet_extractions(
         session_id TEXT PRIMARY KEY, revision TEXT NOT NULL, extracted_at TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS packet_extraction_assignments(
+        project_id TEXT NOT NULL, session_id TEXT NOT NULL, PRIMARY KEY(project_id,session_id)
+      );
       CREATE TABLE IF NOT EXISTS packet_extraction_attempts(
         id INTEGER PRIMARY KEY, at TEXT NOT NULL, session_id TEXT NOT NULL,
         input_bytes INTEGER NOT NULL, reserved_tokens INTEGER NOT NULL, status TEXT NOT NULL,
@@ -195,7 +198,9 @@ def reserve(db, sid, input_bytes, reserve_tokens, daily_cap):
     db.execute('BEGIN IMMEDIATE')
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec='seconds')
-        total = db.execute("SELECT COALESCE(SUM(reserved_tokens),0) FROM packet_extraction_attempts WHERE at>=?", (cutoff,)).fetchone()[0]
+        total = db.execute("""SELECT COALESCE(SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+                     THEN input_tokens+output_tokens ELSE reserved_tokens END),0)
+                     FROM packet_extraction_attempts WHERE at>=?""", (cutoff,)).fetchone()[0]
         if total + reserve_tokens > daily_cap:
             db.rollback()
             return None
@@ -211,6 +216,10 @@ def reserve(db, sid, input_bytes, reserve_tokens, daily_cap):
 def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5):
     stats = dict(processed=0, cached=0, rejected=0, failed=0, missing=0, deferred=0, budget=False, rate_limited=False)
     path = Path(data) / 'agentsview/sessions.db'
+    last_limited = db.execute("SELECT MAX(at) FROM packet_extraction_attempts WHERE status='rate_limited'").fetchone()[0]
+    if last_limited and datetime.now(timezone.utc) < datetime.fromisoformat(last_limited) + timedelta(hours=5):
+        stats['rate_limited'] = True
+        return stats
     with sqlite3.connect(path.as_uri()+'?mode=ro', uri=True) as index:
         index.row_factory = sqlite3.Row
         for sid in dict.fromkeys(ids):
@@ -246,11 +255,17 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
             try:
                 response = call_model([{'role':'system','content':PROMPT},{'role':'user','content':payload}], usage.update)
                 result = checked_result(response, mapped, {item['id'] for item in allowed}, clean)
+                for item in result['projects']:
+                    item['time'] = index.execute('SELECT timestamp FROM messages WHERE session_id=? AND ordinal=?',
+                                                 (sid, item['ordinal'])).fetchone()[0]
                 result['archive_revision'] = archive_revision
                 with db:
                     db.execute("""INSERT INTO packet_extractions VALUES(?,?,?,?) ON CONFLICT(session_id)
                                DO UPDATE SET revision=excluded.revision,extracted_at=excluded.extracted_at,data=excluded.data""",
                                (sid, revision, utc_now(), encode(result)))
+                    db.execute('DELETE FROM packet_extraction_assignments WHERE session_id=?', (sid,))
+                    db.executemany('INSERT OR IGNORE INTO packet_extraction_assignments VALUES(?,?)',
+                                   [(item['id'], sid) for item in result['projects'] if item['id']])
                 stats['processed'] += 1
                 stats['rejected'] += result['rejected']
             except (ValueError, OSError, RuntimeError) as exc:

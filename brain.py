@@ -639,6 +639,9 @@ def get_project(db, project, section=None, offset=0):
     for name in PACKET_FIELDS:
         sections[name] = [packet_item(db, item, name, compact=section is None) for item in data[name]]
     sections['todos'] = [packet_item(db, item, 'todos', compact=section is None) for item in data.get('model_todos', [])] + sections['todos']
+    if outcomes := data.get('model_outcomes'):
+        sections['timeline'] = [packet_item(db, item, 'timeline', compact=section is None)
+                                for item in sorted(outcomes, key=lambda item: item['ref']['time'], reverse=True)] + sections['timeline']
     sections['history'] = [packet_item(db, item, 'history') for item in data['history']] + sections['history']
     if section:
         return project_details(row, section, sections.get(section, []), offset)
@@ -1099,11 +1102,14 @@ def extract_packets(db, args):
     cap = settings.get("daily_token_cap", 100000)
     if type(cap) is not int or cap <= 0:
         raise ValueError("packet_extraction.daily_token_cap must be a positive integer")
-    ids = args.session or [row[0] for row in db.execute("""
-        SELECT w.session_id FROM work w
-        JOIN projects p ON w.project_id=p.id LEFT JOIN project_redirects r ON r.old_id=p.id
-        WHERE r.old_id IS NULL AND w.session_id IS NOT NULL AND w.kind='summary'
-        GROUP BY w.session_id ORDER BY MAX(w.occurred) DESC""")]
+    ids = args.session
+    if not ids:
+        with closing(sqlite3.connect((DATA / 'agentsview/sessions.db').as_uri() + '?mode=ro', uri=True)) as index:
+            roster = index.execute("""SELECT id,transcript_revision FROM sessions WHERE deleted_at IS NULL
+                                      AND user_message_count>0 ORDER BY CASE WHEN ended_at IS NULL THEN started_at ELSE ended_at END DESC""")
+            cached = {row[0]: json.loads(row[1]).get('archive_revision')
+                      for row in db.execute('SELECT session_id,data FROM packet_extractions WHERE revision IS NOT NULL')}
+            ids = [sid for sid, revision in roster if args.force or sid not in cached or cached[sid] != revision]
     route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": extraction.MAX_OUTPUT_TOKENS,
              "extra_body": {"stream": True, "stream_options": {"include_usage": True},
                             "reasoning_effort": "none",
