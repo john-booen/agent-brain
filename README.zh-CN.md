@@ -45,7 +45,7 @@ flowchart LR
 
 ## 本机维护
 
-- `python3 brain.py health --verify-archive --backup` 检查 AgentsView 版本、运行状态与数据库，并创建本机快照。
+- `python3 brain.py health` 按来源显示找到的文件、已索引会话、无消息会话、已有采集副本但未匹配到索引的对话日志和失败。加 `--verify-archive --backup` 可核对 AgentsView 版本并创建本机数据库快照。
 - `python3 brain.py import-conversations claude-ai /本机路径/导出.zip` 导入本机 Claude 导出文件。重复导入同一份会话不会增加记录。
 - `python3 brain.py index-obsidian /本机路径/笔记库` 只读索引明确选择的 Obsidian 库。
 - `python3 brain.py weekly-report` 生成上一个完整周的私有报告。定时采集配置 `AGENT_BRAIN_WEEKLY=1` 后按北京时间每周一出报告。

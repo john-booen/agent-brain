@@ -51,7 +51,7 @@ Use `read_file` with a registered absolute path or the project and a unique file
 
 ## Local operations
 
-- Check the archive version and create a local SQLite backup with `python3 brain.py health --verify-archive --backup`.
+- Run `python3 brain.py health` to see discovered files, indexed sessions, empty sessions, staged transcripts with no matching index entry and reported failures per source. Add `--verify-archive --backup` to check the archive version and create a local SQLite backup.
 - Import a local Claude export with `python3 brain.py import-conversations claude-ai /path/to/export.zip`. Reimporting the same export leaves a single copy of each conversation.
 - Index an explicitly chosen Obsidian vault with `python3 brain.py index-obsidian /path/to/vault`.
 - Generate the last complete week's private reports with `python3 brain.py weekly-report`. Set `AGENT_BRAIN_WEEKLY=1` in your periodic collector to generate them on Monday in Asia/Shanghai.

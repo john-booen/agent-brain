@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from time import sleep
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -341,15 +341,39 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         with sqlite3.connect(brain.health.backup(self.db, self.data)) as snapshot:
             self.assertEqual(snapshot.execute('SELECT name FROM projects').fetchone(), ('Atlas',))
 
-    def test_health_observation_requires_a_continuous_window(self):
-        at = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
-        events = [{'event': 'packet_refresh', 'at': (at - timedelta(minutes=m)).isoformat(), 'status': 'ok'}
-                  for m in range(0, 48 * 60 + 5, 5)]
-        file = self.data / 'health.log'
-        file.write_text('\n'.join(map(json.dumps, events)))
-        self.assertTrue(brain.health.collector_observation(self.data, at)['passed'])
-        file.write_text('\n'.join(map(json.dumps, events[:250])))
-        self.assertFalse(brain.health.collector_observation(self.data, at)['passed'])
+    def test_health_reports_source_files_separately_from_indexed_sessions(self):
+        (self.data / 'coverage.json').write_text(json.dumps({'sources': {
+            'codex': {'found': 8, 'prepared': 1, 'failed': 1, 'failureReasons': {'SOURCE_CHANGED': 1}},
+            'kimi-work': {'found': 2},
+        }}))
+        (self.data / 'agentsview').mkdir()
+        original = self.root / 'pending.jsonl'
+        original.write_text('{}\n')
+        (self.data / 'sources.json').write_text(json.dumps({
+            'sources/codex/0/rollout-12345678-1234-4123-a123-123456789012.jsonl.zst': {'source': str(original)},
+            'sources/kimi-work/0/wire.jsonl': {'source': str(original)},
+            'sources/cowork/0/audit.jsonl': {'source': str(original)},
+        }))
+        with sqlite3.connect(self.data / 'agentsview' / 'sessions.db') as index:
+            index.executescript("""
+                CREATE TABLE sessions (agent TEXT, deleted_at TEXT, user_message_count INT,
+                  message_count INT, parser_malformed_lines INT, is_truncated INT, id TEXT, file_path TEXT);
+                INSERT INTO sessions VALUES ('codex',NULL,1,2,0,0,'codex:12345678-1234-4123-a123-123456789012',NULL),
+                  ('codex',NULL,0,0,0,0,'codex:empty',NULL), ('codex','archived',1,2,1,1,'codex:deleted',NULL),
+                  ('kimi-work',NULL,1,1,1,0,'kimi-work:partial',NULL);
+            """)
+        sources = brain.health.report(self.db, self.data)['sources']
+        self.assertEqual(sources['codex']['source_files_found'], 8)
+        self.assertEqual(sources['codex']['indexed_sessions'], 2)
+        self.assertEqual(sources['codex']['sessions_without_messages'], 1)
+        self.assertEqual(sources['codex']['sessions_with_user_messages'], 1)
+        self.assertEqual(sources['codex']['failure_reasons'], {'SOURCE_CHANGED': 1})
+        self.assertEqual(sources['codex']['transcripts_matched_to_index'], 1)
+        self.assertEqual(sources['codex']['transcripts_without_index'], 0)
+        self.assertTrue(sources['kimi-work']['incomplete'])
+        self.assertEqual(sources['kimi-work']['parser_incomplete_sessions'], 1)
+        self.assertEqual(sources['kimi-work']['transcripts_without_index'], 1)
+        self.assertNotIn('cowork', sources)
 
     def test_rate_limit_leaves_a_visible_status_and_stops_until_next_window(self):
         sid = 'codex:fictional-quota'
