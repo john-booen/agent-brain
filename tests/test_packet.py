@@ -691,6 +691,26 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                                      'rejected':{'quote':2,'role':1}})
         self.assertFalse(brain.recall.checked_claims({'claims':[{**claim,'quote':'采用 会议口径'}]},evidence))
 
+    def test_recall_retains_claims_and_uncertainty_before_pruning_quotes(self):
+        answer = {'level':1, 'route':'Eco', 'cached':True, 'uncertain':'最终日期等对方确认。', 'evidence':[
+            {'kind':'deliverable','text':'已完成报告。','session_id':'cowork:fictional','ordinal':n,
+             'file':'报告.md','quote':'这是一段较长的原始交付说明。'*8}
+            for n in range(4)]}
+        compact = brain.recall.bounded(answer, brain.json_text, None)
+        self.assertEqual([item['ordinal'] for item in compact['evidence']], list(range(4)))
+        self.assertEqual(compact['uncertain'], answer['uncertain'])
+        self.assertTrue(all('quote' in item for item in answer['evidence']))
+        self.assertLessEqual(brain.response_size(compact), 800)
+        long_source = 'cowork:' + 'a' * 80
+        long_answer = {**answer,'evidence':[{**item,'text':'可核结论内容。'*17,'session_id':long_source}
+                                            for item in answer['evidence']]}
+        limited = brain.recall.bounded(long_answer, brain.json_text, None)
+        self.assertGreater(limited['omitted_claims'], 0)
+        self.assertEqual(len(limited['evidence'])+limited['omitted_claims'], 4)
+        self.assertEqual(limited['uncertain'], answer['uncertain'])
+        self.assertEqual({limited['sessions'][item['session']] for item in limited['evidence']}, {long_source})
+        self.assertLessEqual(brain.response_size(limited), 800)
+
     def test_recall_confirmation_needs_user_approval_and_the_same_delivery(self):
         sid = 'codex:fictional-approval'
         report = '/tmp/atlas.md'

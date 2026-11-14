@@ -525,11 +525,35 @@ def bounded(result, encode, count):
     def fits():
         value = encode(result)
         return count(value) <= 800 if count else len(value.encode()) <= 800
-    # Preserve the claims and their locators when the additional source quotes fill the response.
+    # Keep the checked claims, citations and uncertainty ahead of optional inline quotes.
     if result.get('route')=='Eco' and result.get('evidence') and not fits():
+        total = len(result['evidence'])
         result = {**result, 'evidence': [
             {**claim, 'quote': extraction.text_excerpt(claim['quote'], 36)} if claim.get('quote') else claim
             for claim in result.get('evidence', [])]}
+        if not fits():
+            result['evidence'] = [{key:value for key,value in claim.items() if key!='quote'}
+                                  for claim in result['evidence']]
+        if not fits():
+            # Use the same session table as the local evidence page when references repeat.
+            refs = {sid: str(n) for n, sid in enumerate(
+                dict.fromkeys(claim['session_id'] for claim in result['evidence']), 1)}
+            compact = [{**{key:value for key,value in claim.items() if key!='session_id'},
+                       'session': refs[claim['session_id']]} for claim in result['evidence']]
+            candidate = {**result, 'evidence':compact, 'sessions':{ref:sid for sid,ref in refs.items()}}
+            if len(encode(candidate).encode()) < len(encode(result).encode()):
+                result = candidate
+        while not fits() and len(result['evidence'])>1:
+            result['evidence'].pop()
+            result['omitted_claims'] = total-len(result['evidence'])
+            if 'sessions' in result:
+                used = {claim['session'] for claim in result['evidence']}
+                result['sessions'] = {ref:sid for ref,sid in result['sessions'].items() if ref in used}
+        if not fits() and result.get('uncertain'):
+            result['uncertain'] = '另有待核事项，请回看原文。'
+        if not fits():
+            return {'level': 3, 'status': '结论超过返回上限，请缩小问题或查本机原文', 'omitted_claims': total}
+        return result
     while not fits() and result.get('evidence'):
         result['evidence'].pop()
     if not fits():

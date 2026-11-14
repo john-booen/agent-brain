@@ -1628,7 +1628,7 @@ def mcp(db):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"} else "2025-11-25",
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
-                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. Read one registered document section locally when needed. For a shared filename, pass the project, session_id and delivery ordinal to read_file. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
+                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. In recall, resolve session keys through sessions; if omitted_claims is present, check the local evidence before continuing. For a shared filename, pass the project, session_id and delivery ordinal to read_file. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
