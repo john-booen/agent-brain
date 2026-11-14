@@ -129,6 +129,17 @@ async function reportRefresh(report, previous, status, error) {
   await updateRefreshAlert(refresh);
 }
 
+async function localTask(args) {
+  const job = launch(packetPython, ['-B', fileURLToPath(new URL('brain.py', import.meta.url)), ...args],
+    { env: { ...process.env, AGENT_BRAIN_DATA: data }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let diagnostics = '';
+  job.child.stderr.setEncoding('utf8');
+  job.child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-4096); });
+  const code = await job.exit;
+  const reason = diagnostics.match(/\b(?:KeyError|OperationalError|PermissionError|ValueError)(?=:)/)?.[0];
+  return code === 0 ? '' : reason || (code === null ? 'interrupted' : 'exit ' + code);
+}
+
 async function main() {
   process.umask(0o077);
   await fs.mkdir(data, { recursive: true, mode: 0o700 });
@@ -155,7 +166,8 @@ async function collect() {
     if (error.code !== 'ENOENT') throw error;
     return {};
   });
-  const report = { startedAt, sources: { ...priorReport.sources }, packetRefresh: priorReport.packetRefresh };
+  const report = { startedAt, sources: { ...priorReport.sources }, packetRefresh: priorReport.packetRefresh,
+    weeklyGeneratedOn: priorReport.weeklyGeneratedOn };
   const previous = await fs.readFile(manifestPath, 'utf8').then(JSON.parse).catch(error => {
     if (error.code !== 'ENOENT') throw error;
     return {};
@@ -300,21 +312,24 @@ async function collect() {
   } else if (packetPython) {
     let error;
     try {
-      const builder = launch(packetPython, ['-B', fileURLToPath(new URL('brain.py', import.meta.url)),
-        'build-packets', '--files'], { env: { ...process.env, AGENT_BRAIN_DATA: data }, stdio: ['ignore', 'ignore', 'pipe'] });
-      let diagnostics = '';
-      builder.child.stderr.setEncoding('utf8');
-      builder.child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-4096); });
-      const code = await builder.exit;
-      if (code !== 0) {
-        const reason = diagnostics.match(/\b(?:KeyError|OperationalError|PermissionError|ValueError)(?=:)/)?.[0];
-        error = 'Project packet refresh failed (' + (reason || (code === null ? 'interrupted' : 'exit ' + code)) + ')';
-      }
+      const failure = await localTask(['build-packets', '--files']);
+      if (failure) error = `Project packet refresh failed (${failure})`;
     } catch (failure) {
       error = 'Project packet refresh failed to start (' + (failure.code || 'spawn error') + ')';
     }
     if (error) process.exitCode = 1;
     await reportRefresh(report, priorReport.packetRefresh, error ? 'failed' : 'ok', error);
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', dateStyle: 'short' }).format(new Date());
+    if (process.env.AGENT_BRAIN_WEEKLY === '1' && priorReport.weeklyGeneratedOn !== day &&
+        new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date()) === 'Mon') {
+      let failure;
+      try { failure = await localTask(['weekly-report']); }
+      catch (error) { failure = error.code || 'spawn error'; }
+      if (!failure) report.weeklyGeneratedOn = day;
+      else process.exitCode = 1;
+      await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'weekly_report', day, status: failure ? 'failed' : 'ok' }) + '\n');
+      await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
+    }
   }
   console.log(JSON.stringify(report, null, 2));
 }
