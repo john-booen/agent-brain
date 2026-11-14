@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import os
 import tempfile
 import unittest
@@ -119,6 +120,20 @@ class BrainTest(unittest.TestCase):
         self.assertIn("kimi-work 2030-01-01", card)
         detailed = brain.get_project(self.db, "Fictional Atlas", section="deliverables")["card"]
         self.assertIn("kimi-work:fictional#1", detailed)
+
+    def test_model_reports_usage_and_rejects_a_malformed_response(self):
+        response = io.BytesIO(b'{"usage":{"prompt_tokens":20,"completion_tokens":3},"choices":[]}')
+        measured = {}
+        settings = {"url": "http://127.0.0.1:1234/v1", "name": "fictional-model"}
+        with patch.object(brain, "urlopen", return_value=response):
+            with self.assertRaisesRegex(ValueError, "did not contain a choice"):
+                brain.model([], settings=settings, on_usage=measured.update)
+        self.assertEqual(measured, {"prompt_tokens": 20, "completion_tokens": 3})
+
+        stream = [b'data: {"usage":{"prompt_tokens":10},"choices":[1]}']
+        with self.assertRaisesRegex(ValueError, "choice array"):
+            brain.stream_choice(stream, measured.update)
+        self.assertEqual(measured["prompt_tokens"], 10)
 
     def test_reconcile_two_names_for_the_same_project(self):
         payload = {"reason": "Both messages discuss the same release."}

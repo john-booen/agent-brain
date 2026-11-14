@@ -1043,8 +1043,11 @@ def stream_choice(response, on_usage=None):
         if payload == b"[DONE]":
             break
         event = json.loads(payload)
-        if on_usage and event.get("usage"):
-            on_usage(event["usage"])
+        if not isinstance(event, dict):
+            raise ValueError("Expected an object in the model stream")
+        reported_usage = event.get("usage")
+        if on_usage and isinstance(reported_usage, dict):
+            on_usage(reported_usage)
         if event.get("error"):
             error = event["error"]
             message = str(error.get("message", "") if isinstance(error, dict) else error).lower()
@@ -1052,8 +1055,15 @@ def stream_choice(response, on_usage=None):
                 finish = "length"
                 break
             raise ModelRouteError("Model stream returned an upstream error")
-        for choice in event.get("choices", []):
-            content.append((choice.get("delta") or {}).get("content") or "")
+        choices = event.get("choices") or []
+        if not isinstance(choices, list) or any(not isinstance(choice, dict) for choice in choices):
+            raise ValueError("Expected a choice array in the model stream")
+        for choice in choices:
+            delta = choice.get("delta") or {}
+            text = delta.get("content") if isinstance(delta, dict) else None
+            if not isinstance(delta, dict) or (text is not None and not isinstance(text, str)):
+                raise ValueError("Expected text in the model stream")
+            content.append(text or "")
             finish = choice.get("finish_reason") or finish
     if not finish:
         raise ValueError("Model stream ended before a final response")
@@ -1097,9 +1107,15 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
                 choice = stream_choice(response, on_usage)
             else:
                 result = json.load(response)
-                if on_usage and result.get("usage"):
-                    on_usage(result["usage"])
-                choice = result["choices"][0]
+                if not isinstance(result, dict):
+                    raise ValueError("Expected a model response object")
+                reported_usage = result.get("usage")
+                if on_usage and isinstance(reported_usage, dict):
+                    on_usage(reported_usage)
+                choices = result.get("choices")
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    raise ValueError("Model response did not contain a choice")
+                choice = choices[0]
     except HTTPError as exc:
         if exc.code == 429:
             raise ModelQuotaError(exc.headers.get("Retry-After")) from exc
@@ -1108,7 +1124,8 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
         raise
     if choice.get("finish_reason") == "length":
         raise ValueError("Model output reached its token budget")
-    content = choice["message"].get("content")
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
         raise ValueError("Model returned no visible JSON")
     content = content.strip()
