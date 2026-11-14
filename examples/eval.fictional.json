@@ -1,0 +1,16 @@
+{
+  "log": {
+    "project": "Fictional Atlas",
+    "source": "codex",
+    "summary": "Delivered the release checklist."
+  },
+  "case": {
+    "status": "fictional",
+    "sessions": ["codex:fictional-eval"],
+    "inputs": [],
+    "deliverables": [{"session": "codex:fictional-eval", "ordinal": 2}],
+    "rules": [],
+    "todos": [],
+    "attribution": []
+  }
+}
