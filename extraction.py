@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 5
-MAX_INPUT_BYTES = 60_000
+REVISION = 6
+MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
 ECO_MODEL = 'opendesign/deepseek-v4.1-flash-eco'
@@ -98,7 +98,8 @@ def transcript(index, sid, visible, paths_in, encode):
     if len(encode(messages).encode('utf-8')) > MAX_INPUT_BYTES:
         # Retain both ends and pick high-evidence middle turns before applying the byte limit.
         first = messages[:6]
-        rest = sorted(messages[6:], key=lambda row: (-bool(row.get('files')), -row['ordinal']))
+        rest = sorted(messages[6:], key=lambda row: (
+            -row['text'].startswith('User selected:'), -bool(row.get('files')), -row['ordinal']))
         selected, size = [], 2
         for row in first + rest:
             length = len(encode(row).encode('utf-8')) + 1
