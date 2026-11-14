@@ -1177,6 +1177,33 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual(''.join(retrieved),original)
             self.assertEqual(self.tool('get_session',session_id=sid,start=6,limit=1)['messages'][0]['ordinal'],9)
 
+    def test_get_session_replays_the_user_choice_on_both_archive_paths(self):
+        sid = 'deepseek-harness:fictional-user-choice'
+        choice = json.dumps({
+            'kind': 'answer_to_pending_question',
+            'answers': [{'id': 'q', 'selected': ['Keep figures']}],
+            'questions': [{'id': 'q', 'question': 'Internal choice prompt',
+                           'options': [{'label': 'Keep figures', 'description': 'Use meeting numbers. password=example'},
+                                       {'label': 'Discard figures', 'description': 'Unselected text'}]}],
+        })
+        dialogue = [('assistant', 'Source figures.'), ('user', choice),
+                    ('user', '{"kind":"internal", "text":"Hidden event"}')]
+        self.archive_messages(sid, 'Atlas', dialogue)
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent','file_path','ended_at','deleted_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute('UPDATE messages SET is_system=ordinal>0')
+        rows = [{'ordinal': n, 'role': role, 'content': value, 'is_system': n>0}
+                for n, (role,value) in enumerate(dialogue)]
+        with patch.object(brain, 'archive', side_effect=[{'session': {}}, {'messages': rows}]):
+            online = self.tool('get_session', session_id=sid, around=1, limit=3)
+        with patch.object(brain, 'archive', side_effect=RuntimeError('Query service unavailable')):
+            local = self.tool('get_session', session_id=sid, around=1, limit=3)
+        expected = [(0, 'Source figures.'),
+                    (1, 'User selected: Keep figures · Use meeting numbers. password=[REDACTED]')]
+        for result in (online, local):
+            self.assertEqual([(row['ordinal'],row['text']) for row in result['messages']], expected)
+
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
         with ZipFile(word, 'w') as out:

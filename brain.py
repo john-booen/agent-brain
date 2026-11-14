@@ -255,7 +255,17 @@ def session_pages(session_id, start=0, limit=100, all_pages=False):
         cursor = next_cursor
 
 
-def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, around=None):
+def session_message_text(row):
+    if row.get('role') == 'user' and row.get('is_system') and (row.get('content') or '').startswith('{'):
+        try:
+            choice = extraction.selection_context(row['content'], include_questions=False)
+        except (TypeError, ValueError):
+            return ''
+        return visible({'role': 'user', 'dialogue_text': choice})
+    return visible(row)
+
+
+def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, around=None, show_choices=False):
     meta = metadata if metadata is not None else archive("session", "get", session_id)
     meta = meta.get("session", meta)
     transcript = []
@@ -266,6 +276,7 @@ def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, 
         before = min(3, (limit - 1) // 2)
         after = min(3, limit - before - 1)
         pages = [archive("session", "messages", session_id, "--around", around, "--before", before, "--after", after)]
+    message_text = session_message_text if show_choices else visible
     for page in pages:
         new_revision = str(page.get("transcript_revision") or "")
         if revision and new_revision and new_revision != revision:
@@ -273,7 +284,7 @@ def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, 
         revision = new_revision or revision
         next_from = page.get("next_from")
         for row in page.get("messages", []):
-            if text := visible(row):
+            if text := message_text(row):
                 transcript.append({"ordinal": row["ordinal"], "role": row["role"],
                                    "time": row.get("timestamp"), "text": text})
     return {
@@ -287,7 +298,7 @@ def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, 
 
 def read_session_excerpt(session_id, start, limit, around=None):
     try:
-        return read_session(session_id, start=start, limit=limit, around=around)
+        return read_session(session_id, start=start, limit=limit, around=around, show_choices=True)
     except (RuntimeError, OSError, subprocess.TimeoutExpired):
         path = DATA/'agentsview/sessions.db'
         if not path.is_file():
@@ -313,7 +324,7 @@ def read_session_excerpt(session_id, start, limit, around=None):
             next_from = later[after+1]['ordinal'] if len(later)>after+1 else None
             rows = [*reversed(earlier),*later[:after+1]]
     messages = [{'ordinal':row['ordinal'],'role':row['role'],'time':row['timestamp'],'text':text}
-                for row in rows if (text := visible(dict(row)))]
+                for row in rows if (text := session_message_text(dict(row)))]
     return {'session_id':session_id, 'source':meta['agent'] or session_id.split(':')[0],
             'time':meta['ended_at'] or meta['started_at'], 'revision':str(meta['transcript_revision'] or ''),
             'path':source_path(meta), 'messages':messages, 'next_from':next_from, 'route':'local',
