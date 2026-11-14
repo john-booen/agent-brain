@@ -1140,7 +1140,7 @@ def extract_packets(db, args):
             ids = [sid for sid, revision in roster if args.force or sid not in cached or cached[sid] != revision]
     route = {"url": extraction.ECO_URL, "name": extraction.ECO_MODEL, "max_tokens": extraction.MAX_OUTPUT_TOKENS,
              "extra_body": {"stream": True, "stream_options": {"include_usage": True},
-                            "reasoning_effort": "none",
+                            "reasoning_effort": "low", "thinking": {"type": "disabled"},
                             "response_format": {"type": "json_object"}}}
     return extraction.process(db, DATA, ids, visible, packet.paths_in, json_text, clean,
                               lambda messages, usage: model(messages, local_only=True, settings=route, on_usage=usage),

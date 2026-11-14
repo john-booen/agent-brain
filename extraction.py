@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-REVISION = 9
+REVISION = 10
 MAX_INPUT_BYTES = 36_000
 MAX_OUTPUT_TOKENS = 7500
 ECO_URL = 'http://127.0.0.1:3425/v1'
