@@ -860,6 +860,36 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual([(sid,ordinal) for sid,ordinal,_ in brain.recall.text_matches(db,{'atlas-notes.md','修订稿'})],
                              [('codex:one',10),('codex:three',30)])
 
+    def test_file_timelines_keep_same_named_deliveries_in_separate_directories(self):
+        sid = 'codex:fictional-documents'
+        primary, unrelated, alternate = [self.root / folder / name for folder, name in (
+            ('launch', 'report.docx'), ('research', 'report.docx'), ('launch', 'report_v2.docx'))]
+        for file in (primary, unrelated, alternate):
+            file.parent.mkdir(exist_ok=True)
+            file.write_text(file.parent.name + file.name)
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', f'Delivered [{primary.name}]({primary}). 2 页. SHA256: {"a"*64}'),
+            ('assistant', f'Replaced [{primary.name}]({primary}). 1 页. SHA256: {"b"*64}'),
+            ('assistant', f'Delivered [{alternate.name}]({alternate}). 3 页.'),
+            ('assistant', f'Delivered [{unrelated.name}]({unrelated}). 9 页.'),
+            ('assistant', f'Compare [{primary.name}]({primary}) and [{unrelated.name}]({unrelated}). 5 页.'),
+            ('assistant', f'Compare [{primary.name}]({primary}) and [{alternate.name}]({alternate}). 7 页.'),
+        ])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            index.row_factory = sqlite3.Row
+            rows = brain.extraction.transcript(index,sid,brain.visible,brain.packet.paths_in,brain.json_text,
+                                               outbound=True,focused=True)
+            evidence = {(sid, row['ordinal']): row for row in rows}
+            order = {key: (1, 0, 0, 0, key[1]) for key in evidence}
+            found = brain.recall.file_timeline(index,evidence,order,{sid:('1',str(self.root))},brain.visible,
+                                               brain.packet.paths_in,brain.json_text)
+        timelines = {Path(path).parent.name: records for _,records,_,path in found}
+        self.assertEqual(set(timelines), {'launch','research'})
+        self.assertEqual(set(timelines['launch']), {(sid,n) for n in (0,1,2,4)})
+        self.assertEqual(set(timelines['research']), {(sid,n) for n in (3,4)})
+        self.assertNotIn('reported_pages',timelines['launch'][sid,4])
+        self.assertNotIn('reported_pages',timelines['research'][sid,4])
+
     def test_recall_can_identify_inline_delivery_without_exporting_its_body(self):
         sid = 'codex:fictional-inline'
         self.archive_messages(sid, 'Atlas', [

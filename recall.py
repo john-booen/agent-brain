@@ -27,6 +27,7 @@ For a confirmed item, quote the user's explicit acceptance and include "delivery
 earlier assistant handoff of that exact version. For a file use its path from that handoff.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
+When same_path is present, only true entries refer to the exact path of the hashed file.
 When asked about formatting, use the short format quote attached to each historical delivery.
 An assistant message with inline_sections has that many sections in the original chat. Their text is
 kept locally. If the introduction presents a draft or script ready to use, cite this message as a
@@ -162,13 +163,16 @@ def project_seeds(db, project_id, prefer_logs):
     return sessions, seeds
 
 
+VERSION_SUFFIXES = {'.md','.txt','.docx','.pdf','.xlsx','.pptx','.csv'}
+
+
 def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode):
     # Read file bytes only to compute a local fingerprint. Send only metadata of referenced deliveries.
     groups = defaultdict(list)
     for (sid, _), row in evidence.items():
         if row['role']=='assistant':
             for path in row.get('files', []):
-                if Path(path).suffix.lower() in {'.md','.txt','.docx','.pdf','.xlsx','.pptx','.csv'}:
+                if Path(path).suffix.lower() in VERSION_SUFFIXES:
                     groups[packet.task_key(path)].append((sid, path, row))
     def rank(group):
         return max(ordering[(sid, row['ordinal'])][0] for sid, _, row in group)
@@ -182,64 +186,74 @@ def file_timeline(index, evidence, ordering, metadata, visible, paths_in, encode
         if fragment and len(stem)>=4:
             names.add(fragment[0])
         hits = {(sid,ordinal) for sid,ordinal,_ in text_matches(index,names,metadata)}
-        discovered = {}
+        groups_by_location = defaultdict(dict)
         for sid, ordinal in sorted(hits | {(sid,row['ordinal']) for sid,_,row in versions}):
             for row in extraction.transcript(index,sid,visible,paths_in,encode,outbound=True,focused=True,
                                              start=ordinal,end=ordinal):
                 if row['role']!='assistant':
                     continue
-                path = next((p for p in row.get('files',[]) if packet.task_key(p)==stem),None)
-                if not path:
+                files = [p for p in row.get('files', []) if Path(p).suffix.lower() in VERSION_SUFFIXES]
+                candidates = [p for p in files if packet.task_key(p)==stem]
+                if not candidates:
                     continue
                 key = sid,ordinal
                 evidence.setdefault(key,row)
                 ordering.setdefault(key, (1,0,0,0,ordinal))
-                found = re.search(r'(?i)\bsha(?:256)?\s*[:：` ]*([0-9a-f]{64})(?![0-9a-f])',row['text'])
-                pages = re.search(r'(\d{1,4})\s*页',row['text'])
-                format_quote = None
-                if Path(path).suffix.lower()=='.docx':
-                    # A format quote can be assigned to a specific delivery only when it names one Word file.
-                    files = {p for p in row.get('files', []) if Path(p).suffix.lower()=='.docx'}
-                    if files=={path}:
-                        format_quote = re.search(r'无(?:页眉(?:[、和及／/])?)?页脚|(?:没有|去掉|移除|删除)(?:了)?页脚|'
-                                                 r'(?:`PAGE`|(?i:\bPAGE\b))\s*域|\b(?i:no footer|removed (?:the )?footer)\b',row['text'])
-                discovered[key] = {'path':path,'time':row['time'],
-                                   **({'sha256':found[1].lower()} if found else {}),
-                                   **({'reported_pages':int(pages[1])} if pages else {}),
-                                   **({'reported_format_quote':format_quote[0]} if format_quote else {})}
-        if not discovered:
-            continue
-        latest = sorted(discovered, key=lambda k:(discovered[k]['time'] or '',k))[::-1]
-        current = None
-        current_path = None
-        for key in latest:
-            path = discovered[key]['path']
-            cwd = metadata[key[0]][1]
-            resolved = packet.available_path(path,cwd)
-            if not resolved:
-                continue
-            p = Path(resolved)
-            try:
-                if not p.is_file() or p.stat().st_size > 128 * 1024 * 1024:
-                    continue
-                with p.open('rb') as f:
-                    before = p.stat()
-                    digest = hashlib.file_digest(f,'sha256').hexdigest()
-                    after = p.stat()
-                if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):
-                    continue
-            except OSError:
-                continue
-            current = {'basename':p.name,'sha256':digest,
-                       'modified':datetime.fromtimestamp(after.st_mtime,timezone.utc).isoformat()}
-            current_path = resolved
-            predecessor = next((discovered[prior]['sha256'] for prior in latest if discovered[prior].get('sha256')
-                                and packet.available_path(discovered[prior]['path'],metadata[prior[0]][1])==resolved),None)
-            if predecessor:
-                current['matches_latest_reported_sha256'] = predecessor==digest
-            break
-        timelines.append((latest,discovered,current,current_path))
+                text = row['text']
+                locations = defaultdict(list)
+                for path in candidates:
+                    resolved = packet.available_path(path, metadata[sid][1])
+                    folder = Path(resolved or path).parent
+                    suffix = Path(path).suffix.lower()
+                    locations[None if resolved else sid, folder, suffix].append(path)
+                for location, paths in locations.items():
+                    # A single message reference cannot distinguish multiple versions in one group.
+                    if len(paths)!=1:
+                        continue
+                    path, = paths
+                    record = {'path': path, 'time': row['time']}
+                    if len(files)==1:
+                        if found := re.search(r'(?i)\bsha(?:256)?\s*[:：` ]*([0-9a-f]{64})(?![0-9a-f])',text):
+                            record['sha256'] = found[1].lower()
+                        if pages := re.search(r'(\d{1,4})\s*页',text):
+                            record['reported_pages'] = int(pages[1])
+                    if location[2]=='.docx' and sum(Path(p).suffix.lower()=='.docx' for p in files)==1:
+                        if format_quote := re.search(r'无(?:页眉(?:[、和及／/])?)?页脚|(?:没有|去掉|移除|删除)(?:了)?页脚|'
+                                                     r'(?:`PAGE`|(?i:\bPAGE\b))\s*域|\b(?i:no footer|removed (?:the )?footer)\b',text):
+                            record['reported_format_quote'] = format_quote[0]
+                    groups_by_location[location][key] = record
+        for discovered in groups_by_location.values():
+            latest = sorted(discovered, key=lambda k:(discovered[k]['time'] or '',k), reverse=True)
+            resolved_paths = {key: packet.available_path(discovered[key]['path'],metadata[key[0]][1]) for key in latest}
+            current_path, current = latest_file_fingerprint(latest, discovered, resolved_paths)
+            timelines.append((latest,discovered,current,current_path))
     return timelines
+
+
+def latest_file_fingerprint(latest, records, resolved_paths):
+    for path in dict.fromkeys(resolved_paths.values()):
+        if not path:
+            continue
+        p = Path(path)
+        try:
+            if not p.is_file() or p.stat().st_size > 128 * 1024 * 1024:
+                continue
+            with p.open('rb') as f:
+                before = p.stat()
+                digest = hashlib.file_digest(f,'sha256').hexdigest()
+                after = p.stat()
+            if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):
+                continue
+        except OSError:
+            continue
+        current = {'basename':p.name,'sha256':digest,
+                   'modified':datetime.fromtimestamp(after.st_mtime,timezone.utc).isoformat()}
+        predecessor = next((records[key]['sha256'] for key in latest if records[key].get('sha256')
+                            and resolved_paths[key]==path),None)
+        if predecessor:
+            current['matches_latest_reported_sha256'] = predecessor==digest
+        return path, current
+    return None, None
 
 
 def evidence_windows(db, index, project_id, question, visible, paths_in, encode, prefer_logs=False, use_tags=True):
@@ -443,13 +457,17 @@ def evidence_package(db, index, project_id, question, visible, paths_in, encode,
     for latest, discovered, current, current_path in timelines:
         history = []
         same_path = []
+        mixed_paths = current_path and any(packet.available_path(discovered[key]['path'],metadata[key[0]][1])!=current_path
+                                           for key in latest)
         for sid, ordinal in reversed(latest):
             ref = f'{numbered[sid]}:{ordinal}'
             if ref in evidence:
                 record = discovered[sid,ordinal]
+                is_current_path = bool(current_path and packet.available_path(record['path'],metadata[sid][1])==current_path)
                 history.append({'ref':ref, 'basename':Path(record['path']).name,
-                                **{k:v for k,v in record.items() if k!='path'}})
-                if current_path and packet.available_path(record['path'],metadata[sid][1])==current_path:
+                                **{k:v for k,v in record.items() if k!='path'},
+                                **({'same_path': is_current_path} if mixed_paths else {})})
+                if is_current_path:
                     same_path.append((ref,record))
         with_pages = [(ref,record) for ref,record in same_path if record.get('reported_pages')]
         if len(with_pages)>=2:
