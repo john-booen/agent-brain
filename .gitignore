@@ -8,6 +8,11 @@
 !/evaluation.py
 !/usage.py
 !/health.py
+!/install.sh
+!/install.py
+!/.github/
+!/.github/workflows/
+!/.github/workflows/ci.yml
 !/file_text.py
 !/collect.mjs
 !/skills/

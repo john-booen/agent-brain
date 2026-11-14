@@ -1,5 +1,11 @@
 # agent-brain
 
+Try the fictional handoff first. With Python 3.12 and Node.js 22 or newer, run `./install.sh --demo`. The installer backs up existing configuration and stages MCP entries for the detected clients. Import the generated Kimi Work plugin folder and the DeepSeek Harness connector JSON in their respective clients.
+
+[Fictional cross-client handoff](examples/demo.svg)
+
+Run regressions with `python3 -B -m unittest discover -s tests` and `python3 -B evaluation.py --fictional`. The verified AgentsView baseline is v0.47.0 at commit `1079cb632051e8c9cbad2dcc945a60643c756d81`. Before upgrading, use a separate data directory to ingest the same fictional sessions. Compare message identities, tool outputs, and evaluation results before switching your daily installation.
+
 [简体中文](README.zh-CN.md)
 
 Agent Brain gives local AI clients the same project progress cards and work log. AgentsView indexes recorded sessions. Agent Brain reads visible dialogue, asks a configured model to summarize it and identify projects, and builds cards with source references. Agents record completed work through `log_work`.

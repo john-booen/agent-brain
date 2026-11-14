@@ -1,5 +1,11 @@
 # agent-brain
 
+先用虚构项目看一次跨工具交接。需要 Python 3.12 和 Node.js 22 或更新版本。准备好代码后运行 `./install.sh --demo`，安装器备份已有配置，为检测到的客户端生成 MCP 入口。Kimi Work 通过输出的插件文件夹导入，DeepSeek Harness 通过输出的 JSON 导入。
+
+[虚构项目跨端演示](examples/demo.svg)
+
+回归检查用 `python3 -B -m unittest discover -s tests` 和 `python3 -B evaluation.py --fictional`。已验证的 AgentsView 基线为 v0.47.0、提交 `1079cb632051e8c9cbad2dcc945a60643c756d81`。升级时先在独立目录以相同虚构会话运行采集，再对比会话编号、消息位置、工具读取结果和评测指标，达标后切换运行环境。
+
 [English](README.md)
 
 把不同 AI 客户端的工作按项目汇到一起。AgentsView 采集历史，agent-brain 读取可见对话，由模型生成摘要和判断项目归属。每个项目有带出处的进展卡和日志。Agent 完成工作后调用 `log_work` 更新项目。
