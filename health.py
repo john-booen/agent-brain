@@ -5,6 +5,8 @@ import json
 import os
 import sqlite3
 
+import usage
+
 
 def read_json(path):
     try:
@@ -29,6 +31,7 @@ def report(db, directory):
             'packet_refresh': coverage.get('packetRefresh'), 'pending_summary_sessions': indexed,
             'model_last_24h': dict(zip(('attempts','measured_input_tokens','measured_output_tokens','reserved_tokens'), totals)),
             'collector_observation': collector_observation(directory),
+            'client_usage': usage.observed_usage(directory),
             'sqlite': db.execute('PRAGMA quick_check').fetchone()[0]}
 
 

@@ -54,35 +54,56 @@ def record(directory, source, name, response, encoded, error, count_tokens, orig
         print(json.dumps(row, ensure_ascii=False, separators=(',', ':')), file=log)
 
 
+def events(directory):
+    path = directory / 'usage.jsonl'
+    if not path.is_file():
+        return
+    with path.open() as log:
+        for line in log:
+            try:
+                row = json.loads(line)
+                instant = datetime.fromisoformat(row['at'])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if instant.tzinfo is not None and row.get('origin') == 'client':
+                yield instant, row
+
+
+def observed_usage(directory, day=None):
+    local = ZoneInfo('Asia/Shanghai')
+    day = day or datetime.now(local).date()
+    start = day - timedelta(days=6)
+    counts = defaultdict(set)
+    completed = set()
+    for instant, row in events(directory):
+        local_day = instant.astimezone(local).date()
+        if start <= local_day <= day and row['source'] != 'unknown':
+            counts[row['source']].add(local_day)
+            completed.add(local_day)
+    return {'days_with_client_calls': len(completed), 'days_by_client': {source: len(days) for source, days in counts.items()},
+            'first_day': str(start), 'last_day': str(day)}
+
+
 def weekly(db, data, date=None):
     local = ZoneInfo('Asia/Shanghai')
     day = date or datetime.now(local).date()
     monday = day - timedelta(days=day.weekday())
     start = datetime.combine(monday - timedelta(days=7), datetime.min.time(), local)
     finish = start + timedelta(days=7)
-    events = defaultdict(lambda: {'calls':0, 'hits':0, 'measured':0, 'tokens':0})
-    path = data / 'usage.jsonl'
-    if path.is_file():
-        with path.open() as log:
-            for line in log:
-                try:
-                    row = json.loads(line)
-                    instant = datetime.fromisoformat(row['at'])
-                except (ValueError, KeyError):
-                    continue
-                if not start <= instant < finish or row.get('origin') != 'client':
-                    continue
-                key = (row['source'], row['tool'])
-                item = events[key]
-                item['calls'] += 1
-                item['hits'] += bool(row.get('hit'))
-                if row.get('tokens') is not None:
-                    item['measured'] += 1
-                    item['tokens'] += row['tokens']
+    totals = defaultdict(lambda: {'calls':0, 'hits':0, 'measured':0, 'tokens':0})
+    for instant, row in events(data):
+        if not start <= instant < finish:
+            continue
+        item = totals[(row['source'], row['tool'])]
+        item['calls'] += 1
+        item['hits'] += bool(row.get('hit'))
+        if row.get('tokens') is not None:
+            item['measured'] += 1
+            item['tokens'] += row['tokens']
     report = ['# 本周使用情况', '', f'{start.date()} 至 {finish.date() - timedelta(days=1)}', '',
               '| 客户端 | 工具 | 调用 | 命中 | 有 Token 计量的调用 | Token |',
               '|---|---|---:|---:|---:|---:|']
-    for (source, tool), row in sorted(events.items()):
+    for (source, tool), row in sorted(totals.items()):
         report.append(f"| {source} | {tool} | {row['calls']} | {row['hits']} | {row['measured']} | {row['tokens']} |")
     projects = ['# 本周各项目动态', '', f'{start.date()} 至 {finish.date() - timedelta(days=1)}', '']
     for row in db.execute("""SELECT p.name,w.source,w.occurred,w.data FROM work w JOIN projects p ON p.id=w.project_id

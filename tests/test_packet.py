@@ -286,6 +286,7 @@ class PacketTest(unittest.TestCase):
         dest = brain.usage.weekly(self.db, self.data, date(2026, 11, 16))
         self.assertIn('| codex | get_project | 1 | 1 | 0 | 0 |', (dest / '本周使用情况.md').read_text())
         self.assertTrue((dest / '本周各项目动态.md').is_file())
+        self.assertEqual(brain.usage.observed_usage(self.data, date(2026, 11, 16))['days_with_client_calls'], 1)
 
     def test_health_reports_collection_failure_and_backs_up_sqlite(self):
         (self.data / 'coverage.json').write_text(json.dumps({'exit': 1, 'packetRefresh': {'status': 'failed'}}))
