@@ -40,6 +40,9 @@ explicit delivery evidence. Omit decisions about which version is final. Never f
 SEGMENT_SIZE = 80
 EVIDENCE_BYTES = 78_000
 TIMELINE_BYTES = 6_000
+LOOKUP_CLIENTS = {'codex':'codex', 'claude cowork':'cowork', 'cowork':'cowork',
+                  'kimi work':'kimi-work', 'deepseek harness':'deepseek-harness'}
+CLIENT_NAMES = {*LOOKUP_CLIENTS, 'claude', 'kimi', 'deepseek', 'gemini', 'antigravity'}
 
 
 def schema(db):
@@ -531,6 +534,42 @@ def prioritize_logged_evidence(db, project_id, question, evidence):
     return {ref:evidence[ref] for ref in dict.fromkeys([*matched[:2], *evidence])}
 
 
+def named_project(db, question):
+    question = ' '.join(question.casefold().split())
+    names = db.execute('''SELECT p.id,p.name FROM projects p
+                          WHERE NOT EXISTS (SELECT 1 FROM project_redirects r WHERE r.old_id=p.id)
+                          UNION SELECT project_id,alias FROM project_aliases''')
+    matches = []
+    for project_id, name in names:
+        name = ' '.join(name.casefold().split())
+        if len(name)<3 or name in CLIENT_NAMES or name not in question:
+            continue
+        # Match complete Latin names, including inside questions written in Chinese.
+        pattern = r'(?<![a-z0-9_-])' + re.escape(name) + r'(?![a-z0-9_-])'
+        matches.extend((hit.start(),hit.end(),project_id) for hit in re.finditer(pattern,question))
+    candidates = {project_id for left,right,project_id in matches
+                  if not any(start<=left and right<=end and (start,end)!=(left,right)
+                             for start,end,_ in matches)}
+    return next(iter(candidates)) if len(candidates)==1 else None
+
+
+def prioritize_named_client(question, evidence):
+    text = question.casefold()
+    names = [(match.start(),client) for name,client in LOOKUP_CLIENTS.items()
+             for match in re.finditer(r'(?<![a-z0-9_-])'+re.escape(name)+r'(?![a-z0-9_-])',text)]
+    clients = {client for _,client in names}
+    if len(clients)!=1 or not any(start==0 for start,_ in names):
+        return evidence
+    client = next(iter(clients))
+    # A named client scopes the first few citations. The remaining cross-client results stay available.
+    client_refs = [ref for ref,row in evidence.items() if row['session_id'].startswith(client+':')]
+    if not client_refs:
+        return evidence
+    session = evidence[client_refs[0]]['session_id']
+    same_session = [ref for ref in client_refs if evidence[ref]['session_id']==session]
+    return {ref:evidence[ref] for ref in dict.fromkeys([*same_session[:3],*client_refs[:3],*evidence])}
+
+
 def project_progress_evidence(db, archive, project_id, question, visible, paths_in, encode, load_packet):
     if not project_id or load_packet is None:
         return {}
@@ -819,11 +858,26 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
     evidence = {}
     if offset < 0:
         raise ValueError('Offset must be nonnegative')
+    local_project = project_id or named_project(db,question)
+    retrieval_project = local_project if local_only or offset else project_id
 
     def local_result(reason=''):
-        local = prioritize_logged_evidence(db,project_id,question,evidence)
+        local_evidence_rows = evidence
+        if local_project and local_project != retrieval_project:
+            try:
+                with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
+                    index.row_factory = sqlite3.Row
+                    _, scoped, _ = evidence_package(db,index,local_project,question,visible,paths_in,encode,
+                                                    prefer_logs,use_tags)
+                    if scoped:
+                        local_evidence_rows = scoped
+            except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                pass
+        local = prioritize_logged_evidence(db,local_project,question,local_evidence_rows)
+        if not local_project:
+            local = prioritize_named_client(question,local)
         try:
-            progress = project_progress_evidence(db,archive,project_id,question,visible,paths_in,encode,load_packet)
+            progress = project_progress_evidence(db,archive,local_project,question,visible,paths_in,encode,load_packet)
         except (OSError, RuntimeError, ValueError, sqlite3.Error):
             progress = {}
         if progress:
@@ -835,7 +889,7 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
     try:
         with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
             index.row_factory = sqlite3.Row
-            payload, evidence, tags = evidence_package(db,index,project_id,question,visible,paths_in,encode,
+            payload, evidence, tags = evidence_package(db,index,retrieval_project,question,visible,paths_in,encode,
                                                        prefer_logs,use_tags)
         if evidence:
             if local_only or offset:

@@ -678,7 +678,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         package = ({'messages':[{k:v for k,v in row.items() if k!='session_id'}]}, {'1:1':row}, [])
         with patch.object(brain.recall,'evidence_package',return_value=package), \
              patch.object(brain.eco,'call',side_effect=ConnectionRefusedError) as route:
-            value = self.tool('recall',project=log['project_id'],question='Atlas 接着做到哪了？')
+            value = self.tool('recall',question='Atlas 接着做到哪了？')
             self.assertEqual((value['level'],value['route']),(3,'local'))
             self.assertTrue(value['reason'])
             self.assertEqual([item['ordinal'] for item in value['evidence'][:2]],[0,2])
@@ -688,6 +688,27 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             focused = self.tool('recall',project='Atlas',question='Atlas 具体哪份报告?',local_only=True)
             self.assertEqual([item['ordinal'] for item in focused['evidence']],[1])
             self.assertEqual(route.call_count,1)
+
+    def test_implicit_local_project_matches_complete_names_without_guessing(self):
+        alpha,_ = brain.ensure_project(self.db,'Atlas','fictional')
+        expanded,_ = brain.ensure_project(self.db,'Atlas Docs','fictional')
+        beta,_ = brain.ensure_project(self.db,'Borealis','fictional')
+        brain.ensure_project(self.db,'Codex','fictional')
+        self.db.execute('INSERT INTO project_aliases VALUES (?,?)',('北极星计划',alpha))
+        lookup = brain.recall.named_project
+        self.assertEqual(lookup(self.db,'Atlas Docs 进度如何？'),expanded)
+        self.assertEqual(lookup(self.db,'北极星计划接着做到哪了'),alpha)
+        self.assertEqual(lookup(self.db,'Borealis 的 Codex 记录在哪里'),beta)
+        for question in ('Atlas和Borealis 进度如何？','Atlas2怎么做','Codex里之前怎么算的？','那件事做到哪了？'):
+            self.assertIsNone(lookup(self.db,question))
+
+    def test_unnamed_project_keeps_nearby_handoff_from_explicit_client(self):
+        evidence = {ref:{'session_id':sid} for ref,sid in [('a','cowork:meta'),('b','kimi-work:target'),
+                    ('c','kimi-work:other'),('d','kimi-work:target'),('e','codex:context')]}
+        sort = brain.recall.prioritize_named_client
+        self.assertEqual(list(sort('Kimi Work 的可编辑文件在哪？',evidence)),['b','d','c','a','e'])
+        self.assertEqual(list(sort('Kimi Work 和 Codex 的结果有什么区别？',evidence)),list(evidence))
+        self.assertEqual(list(sort('哪里提到 Kimi Work？',evidence)),list(evidence))
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'
