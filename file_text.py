@@ -11,18 +11,19 @@ from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
 
-SUPPORTED = {".docx", ".pdf", ".xlsx", ".md", ".markdown", ".txt", ".csv", ".tsv"}
+SUPPORTED = {".docx", ".pdf", ".xlsx", ".pptx", ".md", ".markdown", ".txt", ".csv", ".tsv"}
 MAX_FILE = 40 * 1024 * 1024
 MAX_XML = 16 * 1024 * 1024
 MACOS_DATALESS = 0x40000000  # SF_DATALESS in Darwin sys/stat.h
 DOCUMENT_KINDS = {
-    '.docx': 'Word 文档', '.pdf': 'PDF 文档', '.xlsx': 'Excel 工作簿',
+    '.docx': 'Word 文档', '.pdf': 'PDF 文档', '.xlsx': 'Excel 工作簿', '.pptx': 'PowerPoint 演示文稿',
     '.md': 'Markdown 文档', '.markdown': 'Markdown 文档', '.txt': '文本',
     '.csv': '表格数据', '.tsv': '表格数据',
 }
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+R_STRICT = "{http://purl.oclc.org/ooxml/officeDocument/relationships}"
 SENSITIVE = re.compile(r"(?:^|[._ -])(?:secrets?|credentials?|passwords?|api[-_ ]?keys?|private[-_ ]?keys?|cookies|tokens?)(?:$|[._ -])", re.I)
 
 
@@ -207,6 +208,40 @@ def text_parts(data):
     return [(title, '\n'.join(lines).strip()) for title, lines in groups if lines or title != '正文']
 
 
+def slide_parts(data, page=None, preview=False):
+    with ZipFile(io.BytesIO(data)) as book:
+        deck = xml(book, 'ppt/presentation.xml')
+        relationships = xml(book, 'ppt/_rels/presentation.xml.rels')
+        slides = deck.findall('{*}sldIdLst/{*}sldId')
+        links = {row.get('Id'): row.get('Target', '') for row in relationships
+                 if row.get('TargetMode') != 'External' and row.get('Type', '').endswith('/slide')}
+        if page is not None and not 1 <= page <= len(slides):
+            raise ValueError('PowerPoint 页码超出范围')
+        selected = list(enumerate(slides, 1))
+        if page is not None:
+            selected = selected[page-1:page]
+        elif preview:
+            selected = selected[:8]
+        for number, slide in selected:
+            # Presentation order is set by relationship IDs, not by slide filenames.
+            ref = slide.get(R + 'id') or slide.get(R_STRICT + 'id')
+            target = links.get(ref, '')
+            part = target[1:] if target.startswith('/') else 'ppt/' + target
+            if not re.fullmatch(r'ppt/slides/[^/\\]+\.xml', part):
+                raise ValueError('PowerPoint 的幻灯片引用无效')
+            tree = xml(book, part).find('{*}cSld/{*}spTree')
+            lines = []
+            if tree is not None:
+                for paragraph in tree.iterfind('.//{*}txBody/{*}p'):
+                    text = ''.join((node.text or '') if node.tag.endswith('}t') else '\n'
+                                   for node in paragraph.iter()
+                                   if node.tag.endswith(('}t','}br'))).strip()
+                    if text:
+                        lines.append(text)
+            if lines:
+                yield f'第 {number} 页', '\n'.join(lines)
+
+
 def extract(path, data, section=None, page=None, preview=False):
     try:
         suffix = path.suffix.lower()
@@ -218,6 +253,8 @@ def extract(path, data, section=None, page=None, preview=False):
             if page is not None:
                 raise ValueError('Excel 按工作表读取，请使用 section')
             parts = list(sheet_parts(data, section, preview))
+        elif suffix == '.pptx':
+            parts = list(slide_parts(data, page, preview))
         else:
             if page is not None:
                 raise ValueError('文本文件按章节读取，请使用 section')

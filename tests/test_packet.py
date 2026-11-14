@@ -1171,6 +1171,31 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         word.write_text('changed')
         self.assertIsNone(brain.packet.file_summary(self.db, value))
 
+    def test_read_file_reads_powerpoint_in_presentation_order(self):
+        file = self.root/'deck.pptx'
+        relationships = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        with ZipFile(file,'w') as deck:
+            deck.writestr('ppt/presentation.xml',f'<p:presentation xmlns:p="urn:p" xmlns:r="{relationships}">'
+                          '<p:sldIdLst><p:sldId r:id="second"/><p:sldId r:id="first"/></p:sldIdLst></p:presentation>')
+            deck.writestr('ppt/_rels/presentation.xml.rels',
+                          '<Relationships><Relationship Id="first" Type="test/slide" Target="slides/slide1.xml"/>'
+                          '<Relationship Id="second" Type="test/slide" Target="/ppt/slides/slide2.xml"/>'
+                          '<Relationship Id="external" Type="test/slide" TargetMode="External" Target="https://example.invalid"/>'
+                          '</Relationships>')
+            for number, word in ((1,'Plan'),(2,'Intro')):
+                deck.writestr(f'ppt/slides/slide{number}.xml',
+                    f'<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:txBody><a:p>'
+                    f'<a:r><a:t>{word}</a:t></a:r><a:br/><a:r><a:t>Text</a:t></a:r>'
+                    '</a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+        self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Deliver the deck.',
+                  deliverables=[{'path':str(file),'task':'Deck'}])
+        args = {'project':'Atlas','path':file.name}
+        self.assertEqual(self.tool('read_file',**args,page=1)['text'],'第 1 页\nIntro\nText')
+        self.assertEqual(self.tool('read_file',**args,page=2)['text'],'第 2 页\nPlan\nText')
+        self.assertIn('第 2 页',self.tool('read_file',**args,section='Plan')['text'])
+        with self.assertRaisesRegex(ValueError,'超出'):
+            self.tool('read_file',**args,page=3)
+
     def test_file_summary_uses_the_outline_and_explicit_takeaway(self):
         path = self.root / 'rehearsal.md'
         path.write_text('Introduction text that should not appear as a takeaway.\n'
