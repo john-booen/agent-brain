@@ -1707,20 +1707,20 @@ PACKET_ITEM_SCHEMAS = {
 }
 
 TOOLS = {
-    "list_projects": ("List recent projects.",
+    "list_projects": ("Recent projects.",
                       {"offset": OFFSET, "days": {"type": "integer", "minimum": 0, "maximum": 3650},
                        "limit": {"type": "integer", "minimum": 1, "maximum": 20}, "min_records": OFFSET}, []),
-    "find_project": ("Find a project or alias.",
+    "find_project": ("Find project or alias.",
                      {"query": {**STRING, "maxLength": 180}}, ["query"]),
-    "get_project": ("Read a project card or section.",
+    "get_project": ("Read project card/section.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
-    "recall": ("Find past evidence.",
+    "recall": ("Recall. local_only=true skips Eco.",
                {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180},
                 "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
     "search": ("Search dialogue.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
-    "get_session": ("Read archived messages.",
+    "get_session": ("Read archived chat.",
                     {"session_id": {**STRING, "maxLength": 350}, "start": OFFSET, "around": OFFSET, "ordinal": OFFSET,
                      "text_offset": OFFSET, "contains": {**STRING, "maxLength": 120},
                      "limit": {"type": "integer", "minimum": 1, "maximum": 80}}, ["session_id"]),
@@ -1805,7 +1805,7 @@ def mcp(db):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"} else "2025-11-25",
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
-                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall. For a quick status use get_project; use find_project for unclear names. In recall, resolve session keys through sessions; if omitted_claims is present, check the local evidence before continuing. For a shared filename, pass the project, session_id and delivery ordinal to read_file. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
+                          "instructions": "For an ongoing project's handoff, final deliverable or settled requirements, call recall with the known project. For local-only requests, set local_only=true on every recall. For a quick status use get_project; use find_project for unclear names. In recall, resolve session keys through sessions; if omitted_claims is present, check the local evidence before continuing. For a shared filename, pass the project, session_id and delivery ordinal to read_file. Skip project tools for new unrelated work. Record delivered work or a user's explicit approval with log_work."}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
