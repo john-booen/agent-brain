@@ -110,7 +110,13 @@ def text_matches(index, terms, sessions=None):
                 FROM message_trigram_fts JOIN messages m ON m.id=message_trigram_fts.rowid
                 WHERE message_trigram_fts MATCH ? AND m.role IN ('user','assistant') AND m.is_system=0'''+scope,
                 (match,*scope_args))
-            return (row for row in hits if any(term in row[2].casefold() for term in terms))
+            def exact_hits():
+                for row in hits:
+                    text = row[2].casefold()
+                    if any(term in text for term in terms):
+                        yield row
+
+            return exact_hits()
     clauses = ' OR '.join("instr(lower(coalesce(dialogue_text,content,'')),?)>0" for _ in terms)
     return index.execute(f"""SELECT session_id,ordinal,coalesce(dialogue_text,content,'') FROM messages m
         WHERE role IN ('user','assistant') AND is_system=0 AND ({clauses}){scope}""", (*sorted(terms),*scope_args))
@@ -236,8 +242,8 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
 
     def relevance(text):
         text = extraction.APP_SNAPSHOT.sub('', text).casefold()
-        return (sum(term in text for term in terms)*2 + sum(term in text for term in short_terms)
-                + 4*len(quantities & numbered_details(text)))
+        quantity_score = 4 * len(quantities & numbered_details(text)) if quantities else 0
+        return sum(term in text for term in terms)*2 + sum(term in text for term in short_terms) + quantity_score
 
     admitted = set(project_sessions)
     found = defaultdict(dict)
@@ -250,9 +256,10 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
                 admitted.add(sid)
     global_scores = defaultdict(dict)
     for sid, ordinal, text in text_matches(index, terms):
-        score = relevance(text)
-        if score and sid not in admitted:
-            global_scores[sid][ordinal] = score
+        if sid not in admitted:
+            score = relevance(text)
+            if score:
+                global_scores[sid][ordinal] = score
     standout = sorted(((max(scores.values()),sid) for sid,scores in global_scores.items()),reverse=True)
     for score,sid in standout[:4]:
         if not project_id or score>=4:
@@ -263,7 +270,9 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
             found[sid][final['ordinal']]=relevance(first['text'])+relevance(final['text'])+8
             found[sid][first['ordinal']]=relevance(first['text'])+5
     for sid, ordinal, text in text_matches(index, terms | short_terms, admitted):
-        score = relevance(text)
+        score = global_scores.get(sid, {}).get(ordinal)
+        if score is None:
+            score = relevance(text)
         if score:
             found[sid][ordinal] = max(found[sid].get(ordinal,0),score)
     if not project_id:
