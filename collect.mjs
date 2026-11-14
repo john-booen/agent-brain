@@ -12,6 +12,9 @@ const program = process.env.AGENTSVIEW_BIN || 'agentsview';
 const zstdProgram = process.env.ZSTD_BIN || 'zstd';
 const useDaemon = process.env.AGENT_BRAIN_SYNC_DAEMON === '1';
 const packetPython = process.env.AGENT_BRAIN_PACKET_PYTHON || (useDaemon && process.platform === 'darwin' ? '/opt/homebrew/bin/python3.12' : '');
+const coveragePath = join(data, 'coverage.json');
+const todoPath = process.env.AGENT_BRAIN_USER_TODO || join(data, 'USER_TODO.md');
+const refreshAlert = '<!-- agent-brain-packet-refresh -->';
 const stagingVersion = 3;
 const roots = {
   codex: ['.codex/sessions', '.codex/archived_sessions'],
@@ -105,6 +108,27 @@ async function writeAtomic(path, value) {
   await fs.rename(path + '.tmp', path);
 }
 
+async function updateRefreshAlert(refresh) {
+  const current = await fs.readFile(todoPath, 'utf8').catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+    return '';
+  });
+  const content = current.startsWith(refreshAlert + '\n') ? current.split(refreshAlert + '\n', 3).at(-1) : current;
+  const warning = refresh.consecutiveFailures >= 3 ?
+    `${refreshAlert}\n- **资料袋刷新连续失败 ${refresh.consecutiveFailures} 次。** 项目资料袋可能过期。见本机健康日志。\n${refreshAlert}\n` : '';
+  if (warning + content !== current) await writeAtomic(todoPath, warning + content);
+}
+
+async function reportRefresh(report, previous, status, error) {
+  const refresh = { status, at: new Date().toISOString(),
+    consecutiveFailures: status === 'failed' ? (previous?.consecutiveFailures || 0) + 1 : 0 };
+  if (error) refresh.error = error;
+  report.packetRefresh = refresh;
+  await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
+  await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'packet_refresh', ...refresh }) + '\n', { mode: 0o600 });
+  await updateRefreshAlert(refresh);
+}
+
 async function main() {
   process.umask(0o077);
   await fs.mkdir(data, { recursive: true, mode: 0o700 });
@@ -127,11 +151,11 @@ async function collect() {
   const configPath = join(archive, 'config.toml');
   const sources = {};
   const startedAt = new Date().toISOString();
-  const priorReport = await fs.readFile(join(data, 'coverage.json'), 'utf8').then(JSON.parse).catch(error => {
+  const priorReport = await fs.readFile(coveragePath, 'utf8').then(JSON.parse).catch(error => {
     if (error.code !== 'ENOENT') throw error;
     return {};
   });
-  const report = { startedAt, sources: { ...priorReport.sources } };
+  const report = { startedAt, sources: { ...priorReport.sources }, packetRefresh: priorReport.packetRefresh };
   const previous = await fs.readFile(manifestPath, 'utf8').then(JSON.parse).catch(error => {
     if (error.code !== 'ENOENT') throw error;
     return {};
@@ -259,7 +283,7 @@ async function collect() {
       '--require-auth', '--host', '127.0.0.1', '--port', '0'], { env, stdio: ['ignore', 'ignore', 'ignore'] });
     if (await start.exit) throw new Error('AgentsView local query service failed to start');
   }
-  await writeAtomic(join(data, 'coverage.json'), JSON.stringify({ ...priorReport, updatingSince: startedAt }, null, 2));
+  await writeAtomic(coveragePath, JSON.stringify({ ...priorReport, updatingSince: startedAt }, null, 2));
   const sync = launch(program, ['source', 'sync'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
   report.exit = await sync.exit;
   report.completedAt = new Date().toISOString();
@@ -270,19 +294,29 @@ async function collect() {
   if (report.exit) {
     for (const item of Object.values(report.sources)) item.syncIncomplete = true;
   }
-  await writeAtomic(join(data, 'coverage.json'), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify(report, null, 2));
+  await writeAtomic(coveragePath, JSON.stringify(report, null, 2));
   if (report.exit) {
     process.exitCode = 1;
   } else if (packetPython) {
+    let error;
     try {
       const builder = launch(packetPython, ['-B', fileURLToPath(new URL('brain.py', import.meta.url)),
-        'build-packets', '--files'], { env: { ...process.env, AGENT_BRAIN_DATA: data }, stdio: ['ignore', 'inherit', 'inherit'] });
-      if (await builder.exit) console.error('Project packet refresh failed');
-    } catch (error) {
-      console.error('Project packet refresh failed:', error.message);
+        'build-packets', '--files'], { env: { ...process.env, AGENT_BRAIN_DATA: data }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let diagnostics = '';
+      builder.child.stderr.setEncoding('utf8');
+      builder.child.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-4096); });
+      const code = await builder.exit;
+      if (code !== 0) {
+        const reason = diagnostics.match(/\b(?:KeyError|OperationalError|PermissionError|ValueError)(?=:)/)?.[0];
+        error = 'Project packet refresh failed (' + (reason || (code === null ? 'interrupted' : 'exit ' + code)) + ')';
+      }
+    } catch (failure) {
+      error = 'Project packet refresh failed to start (' + (failure.code || 'spawn error') + ')';
     }
+    if (error) process.exitCode = 1;
+    await reportRefresh(report, priorReport.packetRefresh, error ? 'failed' : 'ok', error);
   }
+  console.log(JSON.stringify(report, null, 2));
 }
 
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

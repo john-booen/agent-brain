@@ -347,6 +347,19 @@ def source_status():
     return results
 
 
+def packet_coverage():
+    try:
+        report = json.loads((DATA / "coverage.json").read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return {"coverage": "采集状态无法读取"}
+    refresh = report.get("packetRefresh") or {}
+    if refresh.get("status") == "failed":
+        return {"coverage": "资料袋可能过期（最近刷新失败）"}
+    return {}
+
+
 def find(db, query, limit=5):
     q = normalized(query)
     if not q:
@@ -462,7 +475,7 @@ def recent_projects(db, offset=0, days=30, limit=20, min_records=2):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() if days else ""
     rows = [project_index_entry(row) for row in project_list(db)
             if row["records"] >= min_records and (row["updated"] or "") >= since]
-    result = {"projects": [], "next_offset": None}
+    result = {"projects": [], "next_offset": None, **(packet_coverage() if offset == 0 else {})}
     for index, row in enumerate(rows[offset:offset + limit], offset):
         result["projects"].append(row)
         result["next_offset"] = index + 1 if index + 1 < len(rows) else None
@@ -542,6 +555,7 @@ def short_entry(entry, max_bytes):
 
 def project_overview(project, sections):
     result = project_index_entry(project)
+    result.update(packet_coverage())
     result["sections"] = [key for key, items in sections.items() if items]
     status = sections["timeline"][0][2:] if sections["timeline"] else "待补记录"
     groups = (("deliverables", 2, 245), ("inputs", 2, 185), ("rules", 2, 210), ("todos", 2, 190),
@@ -565,7 +579,7 @@ def project_overview(project, sections):
 
 
 def project_details(project, section, items, offset):
-    result = {"id": project["id"], "section": section, "card": "", "next_offset": None}
+    result = {"id": project["id"], "section": section, "card": "", "next_offset": None, **packet_coverage()}
     if not items:
         result["status"] = "待整理" if section in {"inputs", "rules"} else "暂无记录"
         return result
@@ -596,7 +610,7 @@ def get_project(db, project, section=None, offset=0):
         alias_id = resolve_project_id(db, key)
         row = next((item for item in rows if item["id"] == alias_id), None)
     if row is None:
-        return {"status": "没命中", **find_project(db, project)}
+        return {"status": "没命中", **find_project(db, project), **packet_coverage()}
     sections, _ = project_contents(db, row)
     data, _ = packet.load(db, DATA, row["id"], visible, clean, lazy=True)
     for name in PACKET_FIELDS:
@@ -1402,7 +1416,7 @@ def build_packets(db, args):
     for pid in ids:
         try:
             data, rebuilt = packet.load(db, DATA, pid, visible, clean, args.force)
-        except (OSError, ValueError, sqlite3.Error) as exc:
+        except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
             counts['failed_projects'] += 1
             print(json_text({'project_id': pid, 'error': clean(str(exc))[:250]}), file=sys.stderr, flush=True)
             continue
@@ -1489,7 +1503,10 @@ def main():
         elif args.command == "tool":
             print(json_text(call_tool(db, args.name, json.loads(args.arguments))))
         elif args.command == 'build-packets':
-            print(json_text(build_packets(db, args)), flush=True)
+            result = build_packets(db, args)
+            print(json_text(result), flush=True)
+            if result['failed_projects']:
+                return 1
         elif args.command == 'merge-projects':
             print(json_text(merge_projects(db, args.project, args.duplicates, args.reason)))
         elif args.command == 'move-record':

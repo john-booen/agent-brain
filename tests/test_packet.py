@@ -1,6 +1,9 @@
 import importlib.util
 import json
+import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +46,37 @@ class PacketTest(unittest.TestCase):
             self.assertLessEqual(brain.response_size(card), brain.QUERY_BYTES)
         self.assertIn('Source figures', self.tool('read_file', project='Atlas', path=file.name, section='Figures')['text'])
         self.assertFalse(self.tool('log_work', **args)['written'])
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required to exercise the collector')
+    def test_collection_reports_refresh_failure_and_recovery(self):
+        archive = self.root / 'mock-agentsview'
+        archive.write_text('#!/bin/sh\nif [ "$2" = list ]; then echo \'{"agents":[]}\'; fi\n')
+        archive.chmod(0o700)
+        builder = self.root / 'mock-python'
+        builder.write_text('#!/bin/sh\nexit 1\n')
+        builder.chmod(0o700)
+        todo = self.root / 'USER_TODO.md'
+        todo.write_text('# Pending work\n')
+        self.tool('log_work', project='Atlas', summary='Initial record.', source='codex')
+        env = {**os.environ, 'HOME': str(self.root), 'AGENT_BRAIN_DATA': str(self.data), 'AGENT_BRAIN_SYNC_DAEMON': '0',
+               'AGENTSVIEW_BIN': str(archive), 'AGENT_BRAIN_PACKET_PYTHON': str(builder), 'AGENT_BRAIN_USER_TODO': str(todo)}
+        cmd = ['node', str(Path(brain.__file__).with_name('collect.mjs')), 'codex']
+        for fail_count in range(1, 4):
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            report = json.loads((self.data / 'coverage.json').read_text())
+            self.assertEqual(report['exit'], 0)
+            self.assertEqual(report['packetRefresh']['consecutiveFailures'], fail_count)
+            self.assertIn('可能过期', self.tool('get_project', project='Atlas')['coverage'])
+            self.assertIn('可能过期', self.tool('list_projects')['coverage'])
+            self.assertEqual('连续失败' in todo.read_text(), fail_count >= 3)
+        builder.write_text('#!/bin/sh\nexit 0\n')
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(todo.read_text(), '# Pending work\n')
+        self.assertNotIn('coverage', self.tool('get_project', project='Atlas'))
+        self.assertEqual([json.loads(line)['status'] for line in
+                          (self.data / 'health.log').read_text().splitlines()], ['failed', 'failed', 'failed', 'ok'])
 
     def test_confirmed_version_scoped_requirements_and_read_file(self):
         v1 = self.root / 'old.md'
