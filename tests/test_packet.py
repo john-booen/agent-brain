@@ -1327,16 +1327,25 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
 
     def test_recall_considers_recent_unassigned_tasks_with_a_concrete_result(self):
         sid = 'deepseek-harness:fictional-unassigned-task'
+        choice = json.dumps({'kind':'answer_to_pending_question',
+                             'answers':[{'id':'plan','selected':['批准换 8 个']}]})
         self.archive_messages(sid,'General',[('user','Adjust the Bot model allocation.'),
+                                             ('user',choice),
                                              ('assistant','回读核对通过，模型共调整 4 个。')])
         with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
             for col in ('deleted_at','first_message','relationship_type'):
                 index.execute('ALTER TABLE sessions ADD COLUMN '+col+' TEXT')
+            index.execute('UPDATE messages SET is_system=1 WHERE ordinal=1')
+            index.execute('UPDATE messages SET ordinal=26 WHERE ordinal=2')
             index.row_factory=sqlite3.Row
             project=self.tool('log_work',project='Atlas',create_project=True,source='codex',summary='Setup.')['project_id']
             _,evidence,_=brain.recall.evidence_package(self.db,index,project,'Bot 模型实际改了多少？',
                                                        brain.visible,brain.packet.paths_in,brain.json_text,use_tags=False)
-        self.assertEqual({(row['session_id'],row['ordinal']) for row in evidence.values()},{(sid,0),(sid,1)})
+        rows=list(evidence.values())
+        self.assertEqual({(row['session_id'],row['ordinal']) for row in rows},{(sid,0),(sid,1),(sid,26)})
+        result_index=next(i for i,row in enumerate(rows) if row['ordinal']==26 and '4 个' in row['text'])
+        self.assertEqual(rows[result_index+1]['ordinal'],1)
+        self.assertEqual(rows[result_index+1]['text'],'User selected: 批准换 8 个')
 
     def test_recall_file_history_does_not_displace_the_best_message(self):
         sid='codex:fictional-repeated-file'

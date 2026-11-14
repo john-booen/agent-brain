@@ -25,6 +25,10 @@ the same message"}],"uncertain":"what remains unclear, if anything"}.
 Use up to four claims totalling 300 Chinese characters or 150 English words. Identify the task and latest
 usable delivery, distinguish approval from a revision request, and use the user's own words for their rules.
 Keep one assertion per reference; use separate claims for a delivery and a later user request.
+The part before the colon in a reference identifies its conversation. Match an operation to the
+user's requested round. Distinguish a selected plan from a completed operation and favor an
+explicit readback or correction for that round. When several rounds fit, cite them separately
+and say what is needed to choose.
 For a confirmed item, quote the user's explicit acceptance and include "delivery_ref" for the
 earlier assistant handoff of that exact version. For a file use its path from that handoff.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
@@ -95,7 +99,14 @@ def counted_task_results(index, global_scores, relevance, visible, paths_in, enc
         if not first or not final or not relevance(first['text']) or not relevance(final['text']):
             continue
         if numbered_details(final['text']):
-            yield sid,first,final
+            previous = next((row for row in reversed(rows)
+                             if row['role']=='user' and row['ordinal']<final['ordinal']),None)
+            choice = None
+            if previous and previous is not first and previous['text'].startswith('User selected: '):
+                if index.execute('SELECT 1 FROM messages WHERE session_id=? AND ordinal=? AND is_system=1',
+                                 (sid,previous['ordinal'])).fetchone():
+                    choice = previous
+            yield sid,first,final,choice
 
 
 def text_matches(index, terms, sessions=None):
@@ -292,6 +303,7 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
             if any(stem in (title or '') or stem in (session_name or '') for stem in stems):
                 admitted.add(sid)
     global_scores = defaultdict(dict)
+    counted_choices = {}
     for sid, ordinal, text in text_matches(index, terms):
         if sid not in admitted:
             score = relevance(text)
@@ -302,10 +314,15 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
         if not project_id or score>=4:
             admitted.add(sid)
     if project_id and re.search(r'多少|几(?:个|条|项|份)|\bhow many\b',question,re.I):
-        for sid,first,final in counted_task_results(index,global_scores,relevance,visible,paths_in,encode):
+        for sid,first,final,choice in counted_task_results(index,global_scores,relevance,visible,paths_in,encode):
             admitted.add(sid)
-            found[sid][final['ordinal']]=relevance(first['text'])+relevance(final['text'])+8
-            found[sid][first['ordinal']]=relevance(first['text'])+5
+            first_score = relevance(first['text'])
+            result_score = first_score+relevance(final['text'])+8
+            found[sid][final['ordinal']]=result_score
+            found[sid][first['ordinal']]=first_score+5
+            if choice:
+                found[sid][choice['ordinal']]=result_score-2
+                counted_choices[sid,final['ordinal']] = (sid,choice['ordinal'])
     for sid, ordinal, text in text_matches(index, terms | short_terms, admitted):
         score = global_scores.get(sid, {}).get(ordinal)
         if score is None:
@@ -325,7 +342,7 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
             selected = extraction.selection_context(raw)
             score = relevance(selected)
             if selected and score:
-                found[sid][ordinal] = score + 18
+                found[sid][ordinal] = max(found[sid].get(ordinal,0),score+18)
         for ordinal, (text, logged) in seeds[sid].items():
             score = relevance(text)
             found[sid][ordinal] = max(found[sid].get(ordinal,0),2+score*2+(10 if logged else 0))
@@ -413,6 +430,10 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
                 bonus += 5
             grade=(own_score+score//3+bonus,own_score,total,-priority,row['ordinal'])
             ordering[key]=max(ordering.get(key,grade),grade)
+    for result, choice in counted_choices.items():
+        if result in ordering and choice in ordering:
+            # Keep the earlier plan close to its readback when its other matches rank lower.
+            ordering[choice] = max(ordering[choice], (*ordering[result][:-1],choice[1]))
     return evidence,ordering,metadata,tags
 
 
