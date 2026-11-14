@@ -370,6 +370,14 @@ def packet_coverage():
     return {}
 
 
+def verify_agentsview():
+    program = config().get('agentsview_bin', 'agentsview')
+    actual = subprocess.run([program, '--version'], capture_output=True, text=True, check=True, timeout=10).stdout
+    if 'v0.47.0' not in actual or '1079cb632051e8c9cbad2dcc945a60643c756d81' not in actual:
+        raise ValueError('AgentsView version differs from the verified release. See the upgrade procedure.')
+    return actual.strip()
+
+
 def find(db, query, limit=5):
     q = normalized(query)
     if not q:
@@ -1621,6 +1629,7 @@ def main():
     commands.add_parser("weekly-report", help="Generate private reports for the last complete week")
     health_run = commands.add_parser('health', help='Check local index, packet refresh, model jobs and SQLite')
     health_run.add_argument('--backup', action='store_true')
+    health_run.add_argument('--verify-archive', action='store_true')
     run = commands.add_parser("tool")
     run.add_argument("name", choices=TOOLS)
     run.add_argument("arguments", nargs="?", default="{}")
@@ -1691,6 +1700,8 @@ def main():
             print(json_text({"directory": str(usage.weekly(db, DATA))}))
         elif args.command == 'health':
             status = health.write_report(db, DATA)
+            if args.verify_archive:
+                status['agentsview'] = verify_agentsview()
             if args.backup and status['sqlite'] == 'ok':
                 status['backup'] = str(health.backup(db, DATA))
             print(json_text(status))
