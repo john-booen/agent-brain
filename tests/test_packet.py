@@ -79,6 +79,24 @@ class PacketTest(unittest.TestCase):
         self.assertEqual([json.loads(line)['status'] for line in
                           (self.data / 'health.log').read_text().splitlines()], ['failed', 'failed', 'failed', 'ok'])
 
+        source_dir = self.root / '.codex' / 'sessions'
+        source_dir.mkdir(parents=True)
+        transcript = source_dir / 'rollout-fictional.jsonl'
+        transcript.write_text('invalid JSON\n')
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        collected = json.loads((self.data / 'coverage.json').read_text())
+        self.assertEqual(collected['sources']['codex']['skippedLines'], 1)
+        self.assertEqual(self.tool('get_project', project='Atlas')['coverage'], '部分来源采集不完整')
+        self.assertEqual(self.tool('list_projects')['coverage'], '部分来源采集不完整')
+        events = [json.loads(line) for line in (self.data / 'health.log').read_text().splitlines()]
+        self.assertEqual(events[-2]['event'], 'source_collection')
+        self.assertEqual(events[-2]['skippedLines'], 1)
+        transcript.write_text('{"fictional":true}\n')
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('coverage', self.tool('get_project', project='Atlas'))
+
     def test_confirmed_version_scoped_requirements_and_read_file(self):
         v1 = self.root / 'old.md'
         v2 = self.root / 'new.md'

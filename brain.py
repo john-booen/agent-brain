@@ -365,7 +365,7 @@ def packet_coverage():
     refresh = report.get("packetRefresh") or {}
     if refresh.get("status") == "failed":
         return {"coverage": "资料袋可能过期（最近刷新失败）"}
-    if any(item.get('failed') or item.get('syncIncomplete') for item in report.get('sources', {}).values()):
+    if any(item.get('failed') or item.get('syncIncomplete') or item.get('skippedLines') for item in report.get('sources', {}).values()):
         return {'coverage': '部分来源采集不完整'}
     return {}
 

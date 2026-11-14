@@ -200,7 +200,7 @@ async function collect() {
   const jobs = [];
   for (const [agent, dirs] of Object.entries(roots)) {
     const active = !selected.length || selected.includes(agent);
-    const stats = active ? report.sources[agent] = { found: 0, prepared: 0, unchanged: 0, failed: 0, missing: 0, skippedLines: 0 } : null;
+    const stats = active ? report.sources[agent] = { found: 0, prepared: 0, unchanged: 0, failed: 0, missing: 0, skippedLines: 0, failureReasons: {} } : null;
     sources[agent] = [];
     for (const [index, rel] of dirs.entries()) {
       const root = join(homedir(), rel);
@@ -268,16 +268,18 @@ async function collect() {
         }
         const after = await fs.stat(source);
         if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
-          throw new Error('source changed during collection');
+          throw Object.assign(new Error('source changed during collection'), { code: 'SOURCE_CHANGED' });
         }
         await fs.rename(target + '.tmp', target);
         manifest[key] = { source, fingerprint, skippedLines: fileStats.skippedLines };
         stats.skippedLines += fileStats.skippedLines;
         stats.prepared++;
-      } catch {
+      } catch (error) {
         if (previous[key]) manifest[key] = previous[key];
         await fs.rm(target + '.tmp', { force: true });
         stats.failed++;
+        const reason = error.code || (error instanceof SyntaxError ? 'INVALID_JSON' : 'COPY_FAILED');
+        stats.failureReasons[reason] = (stats.failureReasons[reason] || 0) + 1;
       }
       if (index % 100 === 0) {
         checkpoint = checkpoint.then(() => writeAtomic(manifestPath, JSON.stringify(manifest)));
@@ -336,8 +338,9 @@ async function collect() {
     else item.indexedAt ||= priorReport.completedAt;
   }
   for (const [source, item] of Object.entries(report.sources)) {
-    if (item.failed) await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'source_collection',
-      source, at: report.completedAt, status: 'partial', failed: item.failed }) + '\n', { mode: 0o600 });
+    if (item.failed || item.skippedLines) await fs.appendFile(join(data, 'health.log'), JSON.stringify({ event: 'source_collection',
+      source, at: report.completedAt, status: 'partial', failed: item.failed, skippedLines: item.skippedLines,
+      reasons: item.failureReasons }) + '\n', { mode: 0o600 });
   }
   if (report.exit) {
     for (const item of Object.values(report.sources)) item.syncIncomplete = true;
