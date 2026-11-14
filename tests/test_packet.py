@@ -109,6 +109,66 @@ class PacketTest(unittest.TestCase):
         self.assertIn('文件摘要可能过期', self.tool('get_project', project='Atlas')['coverage'])
 
     @unittest.skipUnless(shutil.which('node'), 'Node.js is required to exercise the collector')
+    def test_collection_stages_complete_lines_from_an_active_codex_transcript(self):
+        archive = self.root / 'mock-agentsview'
+        archive.write_text('#!/bin/sh\nif [ "$2" = list ]; then echo \'{"agents":[]}\'; fi\n')
+        archive.chmod(0o700)
+        transcript = self.root / '.codex/sessions/rollout-fictional.jsonl'
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text('{"event":"first"}\n')
+        staged = self.data / 'sources/codex/0/rollout-fictional.jsonl'
+        preload = self.root / 'append-during-collection.mjs'
+        preload.write_text("""
+import fs from 'node:fs/promises';
+const path = process.env.TEST_ACTIVE_TRANSCRIPT;
+const stat = fs.stat;
+let calls = 0;
+fs.stat = async (file, ...args) => {
+  if (file === path && ++calls === 3) {
+    await fs.appendFile(path, '{"event":"password=example"}\\n{"event":"');
+  }
+  return stat(file, ...args);
+};
+""")
+        env = {**os.environ, 'HOME': str(self.root), 'AGENT_BRAIN_DATA': str(self.data), 'AGENT_BRAIN_SYNC_DAEMON': '0',
+               'AGENTSVIEW_BIN': str(archive), 'AGENT_BRAIN_PACKET_PYTHON': '', 'TEST_ACTIVE_TRANSCRIPT': str(transcript)}
+        cmd = [str(Path(brain.__file__).with_name('collect.mjs')), 'codex']
+        result = subprocess.run(['node', '--import', str(preload), *cmd], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = json.loads(result.stdout)['sources']['codex']
+        self.assertEqual((source['activeSnapshots'], source['failed'], source['skippedLines']), (1, 0, 0))
+        self.assertEqual(staged.read_text().splitlines(), ['{"event":"first"}', '{"event":"password=[REDACTED]"}'])
+        with transcript.open('a') as writer:
+            writer.write('third"}\n')
+        result = subprocess.run(['node', *cmd], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(staged.read_text().splitlines()[-1], '{"event":"third"}')
+
+        # If the file is rewritten while the prefix is checked, keep the last good copy.
+        before = staged.read_bytes()
+        transcript.write_text('{"event":"replacement"}\n')
+        preload.write_text("""
+import fs from 'node:fs/promises';
+const path = process.env.TEST_ACTIVE_TRANSCRIPT;
+const stat = fs.stat;
+let calls = 0;
+fs.stat = async (file, ...args) => {
+  if (file === path) {
+    calls++;
+    if (calls === 3) await fs.appendFile(path, '{"event":"new line"}\\n');
+    if (calls === 4 || calls === 6) await fs.writeFile(path, '{"event":"truncated"}\\n');
+    if (calls === 5) await fs.appendFile(path, '{"event":"regrown"}\\n');
+  }
+  return stat(file, ...args);
+};
+""")
+        result = subprocess.run(['node', '--import', str(preload), *cmd], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        source = json.loads(result.stdout)['sources']['codex']
+        self.assertEqual(source['failureReasons'], {'SOURCE_CHANGED': 1})
+        self.assertEqual(staged.read_bytes(), before)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required to exercise the collector')
     def test_collection_stages_cowork_short_folder_and_older_cli_transcript(self):
         archive = self.root / 'mock-agentsview'
         archive.write_text('#!/bin/sh\nif [ "$2" = list ]; then echo \'{"agents":[]}\'; fi\n')

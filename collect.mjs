@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -65,7 +66,7 @@ function launch(command, args, options) {
   return { child, exit };
 }
 
-async function* lfLines(input) {
+async function* lfLines(input, completeOnly = false) {
   const decoder = new StringDecoder('utf8');
   let remainder = '';
   for await (const chunk of input) {
@@ -74,11 +75,11 @@ async function* lfLines(input) {
     yield* parts;
   }
   const last = remainder + decoder.end();
-  if (last) yield last;
+  if (last && !completeOnly) yield last;
 }
 
-async function* lines(input, stats) {
-  for await (const line of lfLines(input)) {
+async function* lines(input, stats, completeOnly = false) {
+  for await (const line of lfLines(input, completeOnly)) {
     if (!line.trim()) continue;
     let row;
     try { row = JSON.parse(line); } catch { stats.skippedLines++; continue; }
@@ -86,10 +87,40 @@ async function* lines(input, stats) {
   }
 }
 
-async function copyTranscript(source, target, stats) {
+async function* hashedPrefix(source, size, hash) {
+  for await (const chunk of createReadStream(source, { end: size - 1 })) {
+    hash.update(chunk);
+    yield chunk;
+  }
+}
+
+async function copyCodexPrefix(source, target, stats, before, previousBytes) {
+  if (!before.size || before.size < previousBytes) return null;
+  const hash = createHash('sha256');
+  const fileStats = { skippedLines: 0 };
+  await pipeline(lines(hashedPrefix(source, before.size, hash), fileStats, true),
+    createWriteStream(target + '.tmp', { mode: 0o600 }));
+  const check = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of hashedPrefix(source, before.size, check)) bytes += chunk.length;
+  const after = await fs.stat(source);
+  if (before.dev !== after.dev || before.ino !== after.ino || before.size > after.size ||
+      bytes !== before.size || hash.digest('hex') !== check.digest('hex') ||
+      !(await fs.stat(target + '.tmp')).size) return null;
+  await fs.rename(target + '.tmp', target);
+  stats.skippedLines += fileStats.skippedLines;
+  stats.prepared++;
+  stats.activeSnapshots = (stats.activeSnapshots || 0) + 1;
+  // Re-read on the next pass even if the source stops at this size.
+  return { source, fingerprint: [stagingVersion, before.size, before.mtimeMs, before.ino, 'prefix'].join(':'),
+    skippedLines: fileStats.skippedLines };
+}
+
+async function copyTranscript(source, target, stats, size) {
   const compressed = /\.zst(?:d)?$/.test(source);
   const decoder = compressed && launch(zstdProgram, ['-dc', '--', source], { stdio: ['ignore', 'pipe', 'ignore'] });
-  const input = decoder ? decoder.child.stdout : createReadStream(source);
+  const input = decoder ? decoder.child.stdout : size === 0 ? [] : createReadStream(source,
+    size === undefined ? {} : { end: size - 1 });
   if (target.endsWith('.zst')) {
     const encoder = launch(zstdProgram, ['-q', '-1', '-c'], { stdio: ['pipe', 'pipe', 'ignore'] });
     const tasks = [
@@ -192,7 +223,7 @@ async function main() {
   finally { await lock.close(); await fs.unlink(lockPath); }
 }
 
-async function copyStable(source, target, stats, cliSessionId) {
+async function copyStable(source, target, stats, cliSessionId, activeCodex, previous) {
   for (let attempt = 0; ; attempt++) {
     const before = await fs.stat(source);
     const fingerprint = [stagingVersion, before.size, before.mtimeMs, before.ino, ...(cliSessionId ? [cliSessionId] : [])].join(':');
@@ -203,7 +234,7 @@ async function copyStable(source, target, stats, cliSessionId) {
       const content = cliSessionId ? { cliSessionId, title, userSelectedFolders } : original;
       await fs.writeFile(target + '.tmp', JSON.stringify(scrub(content)), { mode: 0o600 });
     } else {
-      await copyTranscript(source, target, fileStats);
+      await copyTranscript(source, target, fileStats, activeCodex ? before.size : undefined);
     }
     const after = await fs.stat(source);
     if (before.ino === after.ino && before.size === after.size && before.mtimeMs === after.mtimeMs) {
@@ -211,6 +242,12 @@ async function copyStable(source, target, stats, cliSessionId) {
       stats.skippedLines += fileStats.skippedLines;
       stats.prepared++;
       return { source, fingerprint, skippedLines: fileStats.skippedLines };
+    }
+    if (activeCodex && before.dev === after.dev && before.ino === after.ino && before.size < after.size) {
+      const [, previousSize, , previousInode] = previous?.fingerprint?.split(':') || [];
+      const snapshot = await copyCodexPrefix(source, target, stats, after,
+        previousInode === String(after.ino) ? Number(previousSize) : 0);
+      if (snapshot) return snapshot;
     }
     if (attempt || !source.endsWith('.jsonl')) {
       throw Object.assign(new Error('source changed during collection'), { code: 'SOURCE_CHANGED' });
@@ -268,7 +305,7 @@ async function collect() {
         const source = join(entry.parentPath, entry.name);
         const filename = relative(root, source).replace(/\.zstd$/, '');
         stats.found++;
-        jobs.push({ source, target: join(dest, filename), stats });
+        jobs.push({ source, target: join(dest, filename), stats, activeCodex: agent === 'codex' && source.endsWith('.jsonl') });
         const meta = agent === 'cowork' && coworkMetaName.exec(entry.name);
         if (!meta) continue;
         const fullId = entry.name.slice(0, -5);
@@ -325,7 +362,7 @@ async function collect() {
   async function worker() {
     while (position < jobs.length) {
       const index = position++;
-      const { source, target, stats, cliSessionId } = jobs[index];
+      const { source, target, stats, cliSessionId, activeCodex } = jobs[index];
       const key = relative(data, target);
       try {
         const before = await fs.stat(source);
@@ -337,7 +374,7 @@ async function collect() {
           continue;
         }
         await fs.mkdir(dirname(target), { recursive: true, mode: 0o700 });
-        manifest[key] = await copyStable(source, target, stats, cliSessionId);
+        manifest[key] = await copyStable(source, target, stats, cliSessionId, activeCodex, previous[key]);
       } catch (error) {
         if (previous[key]) manifest[key] = previous[key];
         await fs.rm(target + '.tmp', { force: true });
