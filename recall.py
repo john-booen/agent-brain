@@ -263,11 +263,17 @@ def evidence_windows(db, index, project_id, question, visible, paths_in, encode,
     session_score = {sid:sum(sorted(scores.values(),reverse=True)[:12]) for sid,scores in found.items()}
     ranked = sorted(((score,session_score[sid],sid,ordinal) for sid in metadata for ordinal,score in found[sid].items()),
                     reverse=True)
+    # Pull in the strongest direct hit per session before near-duplicate tag windows fill the limit.
+    direct = {}
+    for item in ranked:
+        if item[2] not in direct:
+            direct[item[2]]=item
+    selected = list(dict.fromkeys([*list(direct.values())[:24],*ranked]))[:140]
     evidence = {}
     ordering = {}
     tails = {sid: index.execute('''SELECT max(ordinal) FROM messages WHERE session_id=?
         AND role='assistant' AND is_system=0''',(sid,)).fetchone()[0] for sid in metadata if sid in found}
-    for priority, (score, total, sid, ordinal) in enumerate(ranked[:140]):
+    for priority, (score, total, sid, ordinal) in enumerate(selected):
         neighbors = index.execute('''SELECT ordinal FROM messages WHERE session_id=? AND role IN ('user','assistant')
             AND ordinal BETWEEN ? AND ? AND (is_system=0 OR (role='user' AND content LIKE '%answer_to_pending_question%'))
             ORDER BY ordinal''', (sid,max(0,ordinal-20),ordinal+20)).fetchall()
@@ -380,6 +386,31 @@ def bounded(result, encode, count):
     if not fits():
         result.pop('uncertain', None)
     return result if fits() else {'level': result['level'], 'status': '查询结果过长，请缩小问题'}
+
+
+def local_evidence(evidence, encode, count, offset=0, reason=''):
+    rows=list(evidence.values())
+    result={'level':3,'route':'local','status':'原文证据','evidence':[]}
+    if reason:
+        result['reason']=reason
+    limit=800
+    for position,row in enumerate(rows[offset:],offset):
+        item={'session_id':row['session_id'],'ordinal':row['ordinal'],'role':row['role']}
+        if row.get('files'):
+            item['files']=[Path(p).name[:120] for p in row['files'][:2]]
+        if row.get('inline_sections'):
+            item['inline_sections']=row['inline_sections']
+        item['text']=extraction.text_excerpt(row['text'],150 if position-offset<3 else 92)
+        candidate={**result,'evidence':[*result['evidence'],item],'next_offset':position+1}
+        encoded=encode(candidate)
+        if (count(encoded) if count else len(encoded.encode()))>limit:
+            break
+        result=candidate
+    if result.get('next_offset')==len(rows):
+        result.pop('next_offset')
+    if not result['evidence']:
+        result['status']='没有更多原文证据'
+    return result
 
 
 def checked_claims(raw, evidence):
@@ -533,7 +564,7 @@ def write_index(db, directory, pid, name):
 
 
 def query(db, directory, settings, project, question, resolve, get_project, visible, paths_in, encode, model, count,
-          prefer_logs=False, use_tags=True):
+          prefer_logs=False, use_tags=True, local_only=False, offset=0):
     question = question.strip()
     if not question:
         return {'level': 4, 'status': '请提供具体的历史问题'}
@@ -542,6 +573,9 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         return bounded({'level': 4, 'status': '请先定位项目', 'navigation': get_project(db, project)}, encode, count)
     archive = directory / 'agentsview' / 'sessions.db'
     tags = []
+    evidence = {}
+    if offset < 0:
+        raise ValueError('Offset must be nonnegative')
     failure = '未找到可核出处'
     try:
         with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
@@ -549,6 +583,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             payload, evidence, tags = evidence_package(db,index,project_id,question,visible,paths_in,encode,
                                                        prefer_logs,use_tags)
         if evidence:
+            if local_only or offset:
+                return local_evidence(evidence,encode,count,offset)
             packed = encode(payload)
             digest = hashlib.sha256(packed.encode()).hexdigest()
             fingerprint = hashlib.sha256(encode([PROMPT, project_id, digest, list(evidence.values()),
@@ -579,6 +615,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         failure = str(exc)
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         failure = '在线路线或索引暂时不可用'
+    if evidence:
+        return local_evidence(evidence,encode,count,offset,failure)
     if tags:
         return bounded({'level': 3, 'status': failure,
                         'evidence': [{'text': t['summary'][:150], 'session_id': sid,

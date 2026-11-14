@@ -485,6 +485,10 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual((answer['level'], len(answer['evidence'])), (1, 2))
             self.assertTrue(self.tool('recall', project='Atlas', question='Which report is done?')['cached'])
             self.assertEqual(model.call_count, 1)
+            local = self.tool('recall', project='Atlas', question='Which report is done?',local_only=True)
+            self.assertEqual(local['route'],'local')
+            self.assertIn(2,[row['ordinal'] for row in local['evidence']])
+            self.assertEqual(model.call_count,1)
         self.assertEqual(brain.eco.snapshot(self.db, settings)['24h']['used_or_reserved'], 9)
         audit = json.loads((self.data/'recall_evidence.jsonl').read_text().splitlines()[0])
         self.assertEqual(set(audit), {'at','sha256','bytes','messages'})
@@ -494,7 +498,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.db.commit()
         with patch.object(brain, 'model', side_effect=OSError('offline')):
             answer = self.tool('recall', project='Atlas', question='Where is the schedule?')
-        self.assertEqual((answer['level'], answer['evidence'][0]['ordinal']), (3, 2))
+        self.assertEqual((answer['level'],answer['route']), (3,'local'))
+        self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'

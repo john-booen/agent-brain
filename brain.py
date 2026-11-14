@@ -1437,8 +1437,9 @@ TOOLS = {
     "get_project": ("Read a project card or section by name or ID.",
                     {"project": {**STRING, "maxLength": 180},
                      "section": {**STRING, "enum": list(PROJECT_DETAIL_SECTIONS)}, "offset": OFFSET}, ["project"]),
-    "recall": ("Check past deliverables, settled requirements or handoff details against sources.",
-               {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180}}, ["question"]),
+    "recall": ("Find project evidence and past deliverables.",
+               {"question": {**STRING, "maxLength": 600}, "project": {**STRING, "maxLength": 180},
+                "local_only": {"type": "boolean"}, "offset": OFFSET}, ["question"]),
     "search": ("Search old dialogue for evidence.",
                {"query": STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 12}}, ["query"]),
     "get_session": ("Read an excerpt from an archived session.",
@@ -1493,7 +1494,7 @@ def call_tool(db, name, args):
     if name == "recall":
         return recall.query(db, DATA, config().get('eco', {}), args.get('project'), args['question'],
                             resolve_project_id, get_project, visible, packet.paths_in, json_text,
-                            model, usage.token_counter(DATA))
+                            model, usage.token_counter(DATA),local_only=args.get('local_only',False),offset=args.get('offset',0))
     if name == "get_session":
         result = session_excerpt(**args)
         if response_size(result) > QUERY_BYTES:
