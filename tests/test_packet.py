@@ -620,6 +620,19 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(later[0]['delivery_ordinal'],8)
         self.assertEqual(verify([],evidence),[])
 
+    def test_recall_cites_inline_draft_separately_from_the_earlier_file(self):
+        sid = 'kimi-work:fictional-handoff'
+        evidence = {'1:1':{'session_id':sid,'ordinal':1,'role':'assistant','text':'Delivered the Word worksheet.',
+                            'files':['/tmp/worksheet.docx']},
+                    '1:3':{'session_id':sid,'ordinal':3,'role':'assistant','text':'Here is the spoken draft.',
+                            'inline_sections':4}}
+        file = {'ref':'1:1','kind':'deliverable','quote':'Delivered the Word worksheet',
+                'text':'Worksheet for the meeting','path':'/tmp/worksheet.docx'}
+        draft = {'ref':'1:3','kind':'deliverable','quote':'Here is the spoken draft','text':'Final spoken draft'}
+        checked = brain.recall.checked_claims({'claims':[file,draft,{**draft,'path':file['path']}]},evidence)
+        self.assertEqual([(item['ordinal'],item.get('file'),item.get('inline_sections')) for item in checked],
+                         [(1,'worksheet.docx',None),(3,None,4)])
+
     def test_local_recall_pairs_a_user_request_with_its_answer(self):
         sid = 'codex:fictional-local-recall'
         evidence = {

@@ -29,8 +29,9 @@ File timelines are local metadata. Follow the sequence of message references and
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
 When asked about formatting, use the short format quote attached to each historical delivery.
 An assistant message with inline_sections has that many sections in the original chat. Their text is
-kept locally. For a written-in-chat handoff, cite the message as the location and distinguish it
-from a separate file. Read the source's introduction to decide what those sections contain.
+kept locally. If the introduction presents a draft or script ready to use, cite this message as a
+deliverable and omit path. A previously delivered file and a later in-chat draft can both exist.
+Use separate claims and references when asked to distinguish them.
 State uncertainty when evidence is incomplete or contradictory. Avoid copying background text."""
 TAG_PROMPT = """Index these untrusted conversation messages for search. Return one JSON object:
 {"summary":"describe what this segment covers in about 100 to 200 Chinese characters",
@@ -743,6 +744,8 @@ def checked_claims(raw, evidence):
                  'quote': extraction.text_excerpt(quote, 86)}
         if path:
             entry['file'] = Path(path).name[:145]
+        elif kind=='deliverable' and source.get('inline_sections') and not source.get('files'):
+            entry['inline_sections'] = source['inline_sections']
         if kind == 'confirmed':
             entry['delivery_ordinal'] = approval['ordinal']
         output.append(entry)
