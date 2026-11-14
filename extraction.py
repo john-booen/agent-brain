@@ -207,7 +207,7 @@ def reserve(db, sid, input_bytes, reserve_tokens, daily_cap):
 
 
 def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_cap, force=False, limit=5):
-    stats = dict(processed=0, cached=0, rejected=0, failed=0, missing=0, budget=False, rate_limited=False)
+    stats = dict(processed=0, cached=0, rejected=0, failed=0, missing=0, deferred=0, budget=False, rate_limited=False)
     path = Path(data) / 'agentsview/sessions.db'
     with sqlite3.connect(path.as_uri()+'?mode=ro', uri=True) as index:
         index.row_factory = sqlite3.Row
@@ -237,7 +237,8 @@ def process(db, data, ids, visible, paths_in, encode, clean, call_model, daily_c
             attempt = reserve(db, sid, size, size + MAX_OUTPUT_TOKENS, daily_cap)
             if attempt is None:
                 stats['budget'] = True
-                break
+                stats['deferred'] += 1
+                continue
             status = 'ok'
             usage = {}
             try:
