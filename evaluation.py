@@ -70,6 +70,25 @@ def score(cases, predict, measure):
     return report
 
 
+def evidence_differences(cases, predict):
+    """List mismatches without copying message text into the report."""
+    for case in cases:
+        if case.get('status') not in {'codex_reviewed', 'user_verified', 'fictional'}:
+            continue
+        predicted = predict(case)
+        sessions = set(case.get('sessions', ()))
+        for key in FIELDS:
+            actual = {anchor(item) for item in predicted.get(key, ()) if not sessions or item['session'] in sessions}
+            expected = {anchor(item) for item in case[key]}
+            if key == 'attribution':
+                actual = {(sid, None, None) for sid, _, _ in actual}
+                expected = {(sid, None, None) for sid, _, _ in expected}
+            if expected != actual:
+                yield {'project_id': case['id'], 'field': key,
+                       'missing': sorted(expected - actual, key=repr),
+                       'extra': sorted(actual - expected, key=repr)}
+
+
 def can_publish(report):
     fields = report['metrics']
     measured = (fields['deliverables']['exact_project_accuracy'], fields['rules']['precision'], fields['attribution']['precision'])
@@ -112,6 +131,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--markdown', type=Path)
     parser.add_argument('--compare', type=Path, help='Calculate metric changes from a previous scorecard JSON')
+    parser.add_argument('--diff-evidence', type=Path, help='Write the private evidence anchors behind false positives and misses')
     parser.add_argument('--release-gate', action='store_true', help='Exit nonzero until the accuracy and user review gates pass')
     args = parser.parse_args()
     if args.fictional:
@@ -130,7 +150,15 @@ def main():
             if not tokenizer:
                 parser.error('install the local tokenizer cache before requesting token counts')
         with brain.connect() as db:
-            report = score(cases, lambda item: prediction(db, item), lambda item: measure_card(db, item, tokenizer))
+            predictions = {item['id']: prediction(db, item) for item in cases
+                           if item.get('status') in {'codex_reviewed', 'user_verified', 'fictional'}}
+
+            def predict(item):
+                return predictions[item['id']]
+
+            report = score(cases, predict, lambda item: measure_card(db, item, tokenizer))
+            if args.diff_evidence:
+                args.diff_evidence.write_text(json.dumps(list(evidence_differences(cases, predict)), ensure_ascii=False, indent=2) + '\n')
     if args.compare:
         report['comparison'] = compare(json.loads(args.compare.read_text()), report)
     if args.release_gate:
