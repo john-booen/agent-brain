@@ -83,9 +83,11 @@ class PacketTest(unittest.TestCase):
         v2 = self.root / 'new.md'
         v1.write_text('# Valuation\n' + 'Adjusted revenue × multiple.\n' * 180)
         v2.write_text('# Valuation\nDifferent assumptions.')
-        initial = self.tool('log_work', project='Atlas', summary='Prior reviewed version', source='codex', work_id='old',
+        sid = 'codex:fictional-confirmation'
+        self.archive_messages(sid, 'Atlas', [('user', f'这份 {v1.name} 作为终版')])
+        initial = self.tool('log_work', project='Atlas', summary='Prior reviewed version', source='codex', work_id='old', session_id=sid,
                             inputs=[{'text': 'User source material'}],
-                            deliverables=[{'path': str(v1), 'task': 'Valuation', 'confirmed': True}],
+                            deliverables=[{'path': str(v1), 'task': 'Valuation', 'confirmed': True, 'ordinal': 0}],
                             rules=[{'text': 'Use internal figures.', 'topic': 'scope', 'scope': '项目'}])
         with patch.object(brain, 'now', return_value='2030-01-01T00:00:00+00:00'):
             self.tool('log_work', project='Atlas', summary='New proposal', source='kimi-work', work_id='new',
@@ -121,36 +123,40 @@ class PacketTest(unittest.TestCase):
             self.tool('read_file', project='Atlas', path='source.md', section='Figures')
         self.assertIn('first', self.tool('read_file', project='Atlas', path=str(paths[0]), section='Figures')['text'])
 
-    def test_archive_extraction_keeps_two_deliverables_and_user_evidence(self):
-        sid = 'kimi-work:fictional-packet'
-        doc = self.root / 'Atlas description.md'
-        first = self.root / 'Atlas meeting brief-v1.md'
-        final = self.root / 'Atlas meeting brief-终版.md'
-        other = self.root / 'Atlas outline.md'
-        for f in (doc, first, final, other):
-            f.write_text('# Outline\nAn independently created project test document.')
+    def archive_messages(self, sid, project, messages):
         archive = self.data / 'agentsview'
         archive.mkdir()
         with sqlite3.connect(archive / 'sessions.db') as index:
             index.executescript('''CREATE TABLE sessions(id,cwd,transcript_revision,display_name,session_name);
                                   CREATE TABLE messages(session_id,ordinal,role,timestamp,content,dialogue_text,is_system);''')
-            index.execute('INSERT INTO sessions VALUES(?,?,?,?,?)', (sid, str(self.root), '1', 'Atlas', 'Atlas'))
-            messages = [
-                ('user', f'<attachment>{json.dumps({"path": str(doc)})}</attachment>\n请按原始材料整理。不要添加公司名字。'),
-                ('assistant', f'已交付 [初稿]({first})'),
-                ('assistant', f'已交付 [终版]({final})'),
-                ('user', '可以'),
-                ('assistant', f'已交付 [现场提纲]({other})'),
-            ]
+            index.execute('INSERT INTO sessions VALUES(?,?,?,?,?)', (sid, str(self.root), '1', project, project))
             for n, (role, value) in enumerate(messages):
                 index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,0)', (sid, n, role, f'2026-01-01T00:00:0{n}Z', value, value))
+
+    def test_archive_extraction_keeps_two_deliverables_and_user_evidence(self):
+        sid = 'kimi-work:fictional-packet'
+        doc = self.root / 'Atlas description.md'
+        first = self.root / 'Atlas meeting brief-草稿.md'
+        final = self.root / 'Atlas meeting brief-终版.md'
+        other = self.root / 'Atlas outline.md'
+        for f in (doc, first, final, other):
+            f.write_text('# Outline\nAn independently created project test document.')
+        self.archive_messages(sid, 'Atlas', [
+            ('user', f'<attachment>{json.dumps({"path": str(doc)})}</attachment>\n请按原始材料整理。不要添加公司名字。'),
+            ('assistant', f'已交付 [初稿]({first})'),
+            ('user', '好的，用这版改成正式版'),
+            ('assistant', f'已交付 [终版]({final})'),
+            ('user', '可以'),
+            ('assistant', f'已交付 [现场提纲]({other})'),
+        ])
         record = self.tool('log_work', project='Atlas', summary='Completed the project', source='kimi-work', session_id=sid)
         payload, _ = brain.packet.load(self.db, self.data, record['project_id'], brain.visible, brain.clean)
         self.assertEqual({x['path'] for x in payload['deliverables']}, {str(final), str(other)})
         self.assertTrue(next(x for x in payload['deliverables'] if x['path'] == str(final))['pinned'])
         self.assertIn(str(doc), {x['path'] for x in payload['inputs']})
         self.assertIn('不要添加公司名字', {x['text'] for x in payload['rules']})
-        self.assertIn(str(first), {x.get('path') for x in payload['history']})
+        saved_draft = next(x for x in payload['history'] if x.get('path') == str(first))
+        self.assertEqual(saved_draft['status'], '草稿')
         with patch.object(brain.packet, 'build', side_effect=AssertionError('must use cached packet')):
             self.assertIn('终版', self.tool('get_project', project='Atlas')['card'])
 
@@ -166,6 +172,14 @@ class PacketTest(unittest.TestCase):
         brain.move_project_record(self.db, 'two', 'Separate event', 'Matched the event handoff')
         self.assertEqual(self.db.execute('SELECT project_id FROM work WHERE id=?', ('two',)).fetchone()[0], c['project_id'])
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM work').fetchone()[0], 3)
+
+    def test_confirmation_without_user_evidence_stays_unconfirmed(self):
+        for name, fields in [('Status only', {'status': '用户确认'}), ('No message', {'confirmed': True})]:
+            file = self.root / f'{name}.md'
+            file.write_text('# Figures\nSource figures.')
+            self.tool('log_work', project=name, summary='Record without confirmation evidence.', source='codex',
+                      deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
+            self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'

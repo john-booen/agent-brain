@@ -524,6 +524,8 @@ def project_contents(db, project, include_log=False):
                 claim = item.get("text") or item["path"]
                 ref = reference(row, item.get("ordinal"), item.get("evidence_time"))
                 status = item.get("status")
+                if status == '用户确认':
+                    status = '已交付'
                 entry = f"- {claim}" + (f"（{status}）" if status else "") + f" — {ref}"
                 if include_log:
                     work_log.append(entry)
@@ -746,7 +748,11 @@ def packet_log_item(value, kind):
         if not item:
             raise ValueError('An input needs a path or source text')
     elif kind == 'deliverables':
-        status = '用户确认' if value.get('confirmed') else value.get('status', '已交付')
+        status = value.get('status', '已交付')
+        if status == '用户确认' and value.get('confirmed') is not True:
+            status = '已交付'
+        elif value.get('confirmed') is True and status != '已失效':
+            status = '用户确认'
         item = valid_item({**value, 'status': status}, 'files', None)
         task = value.get('task')
         if not isinstance(task, str) or not task.strip():
@@ -778,6 +784,9 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
         if not isinstance(items, list) or len(items) > 30:
             raise ValueError("Expected up to 30 items")
         payload[kind] = [valid_item(item, kind, None) for item in items]
+    for item in payload['files']:
+        if item['status'] == '用户确认':
+            item['status'] = '已交付'
     for kind in PACKET_FIELDS:
         if kind in details:
             items = details[kind]
@@ -785,13 +794,17 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
                 raise ValueError('Expected up to 30 packet items')
             payload[kind] = [packet_log_item(item, kind) for item in items]
     session_id = clean(session_id) if session_id else None
-    identity_payload = payload
+    identity_payload = {**payload, 'files': [valid_item(item, 'files', None) for item in details.get('files') or []]}
     if 'rules' in payload:
-        # Rules inferred on write must keep the same implicit work ID as older clients.
-        identity_payload = {**payload, 'rules': [
+        identity_payload['rules'] = [
             rule if original.get('topic') else {field: value for field, value in rule.items() if field != 'topic'}
             for original, rule in zip(details['rules'], payload['rules'])
-        ]}
+        ]
+    if 'deliverables' in payload:
+        identity_payload['deliverables'] = [
+            {**item, 'status': '用户确认' if original.get('confirmed') else original.get('status', '已交付')}
+            for original, item in zip(details['deliverables'], payload['deliverables'])
+        ]
     key = clean(work_id) if work_id else stable(json_text([project, source, session_id, identity_payload]))
     db.execute("BEGIN IMMEDIATE")
     try:
@@ -803,6 +816,9 @@ def log_work(db, project, summary, source, session_id=None, work_id=None, **deta
         existing_payload = json.loads(existing['data'])
         if 'rules' in existing_payload:
             existing_payload['rules'] = [packet.normalize_rule(rule) for rule in existing_payload['rules']]
+        for item in existing_payload.get('files', []) + existing_payload.get('deliverables', []):
+            if item['status'] == '用户确认' and item.get('confirmed') is not True:
+                item['status'] = '已交付'
         if (existing_project, existing['source'], existing['session_id'], existing_payload) != (pid, source, session_id, payload):
             raise ValueError("work_id already identifies different work")
         refresh(db, [pid])

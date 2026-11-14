@@ -10,7 +10,7 @@ from pathlib import Path
 import file_text
 
 
-VERSION = 18
+VERSION = 19
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
 NAME = re.compile(r'([^/\s\\()（）《》<>\[\]，。；：、]+\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -18,8 +18,9 @@ ATTACHMENT = re.compile(r'<attachment>(.*?)</attachment>', re.S | re.I)
 CLAUSE = re.compile(r'(?m)[^。！？；\n]+')
 NON_USER = re.compile(r'^(?:\s*<system(?:>|-reminder)|\s*\[(?:Message|Reply) from |\s*\[Tool result\]|\s*\[Tool output\]|The following is the Codex agent history)', re.I)
 INSTRUCTIONS = re.compile(r'只(?:做|给|保留|改|用|写)|(?:一律|统一|对外|内部|数据|数字|口径|交付|必须|不要|不得|不能|不用|别|请按|以.{1,18}为准|改成|不做|脱敏|保守|以后|后续|今后|严格|保持)')
-APPROVAL = re.compile(r'(?:这[一份个版]|就是|作为|按.{0,20}用|用.{0,25})(?:.{0,28})(?:终版|定稿|正式版|最终版)|^(?:可以|好的|好|确认|通过|定稿|就这样|没问题|用这版)[。！!，,\s]*$')
+APPROVAL = re.compile(r'(?:这(?:一)?[份个版]|就用这版).{0,22}(?:就是|作为|定为|当作)\s*(?:终版|定稿|正式版|最终版)|^按.{1,22}(?:定稿|定版)[。！!\s]*$|^(?:可以|好的|好|确认|通过|定稿|就这样|没问题|用这版)[。！!，,\s]*$')
 NEGATIVE = re.compile(r'不要|不对|不行|还没|草稿|不满意|未通过|不是终版|未确认|别|重做')
+REVISION_REQUEST = re.compile(r'改成|改为|修改|调整|补充|重写|再改|再做|出一版|生成|重新|优化|完善')
 IRRELEVANT = re.compile(r'未(?:直接)?涉及|未提供具体|仅作为(?:上下文|背景)|仅提及|从未执行|无具体|不属于本项目')
 DELIVERY_SIGNAL = re.compile(r'交付|下载|已生成|已完成|已保存|写入|定稿|最终|终版|保存至|文件在|输出|\.docx\]|\.pdf\]|\.xlsx\]|\.md\]', re.I)
 TEXT_DELIVERY = re.compile(r'(?:现场|口头|沟通|可直接照着说).{0,16}(?:对话稿|口头稿|逐字稿|话术)|可直接(?:复制|粘贴|发送)')
@@ -239,6 +240,28 @@ def normalize_rule(item):
     return {**item, 'topic': item.get('topic') or rule_topic(item['text'])}
 
 
+def confirms_delivery(text):
+    text = text.strip()
+    return bool(APPROVAL.search(text) and not (NEGATIVE.search(text) or REVISION_REQUEST.search(text)))
+
+
+def recorded_confirmation(index, session_id, ordinal, path, visible):
+    if index is None or not session_id or type(ordinal) is not int or ordinal < 0:
+        return False
+    message = index.execute("SELECT * FROM messages WHERE session_id=? AND ordinal=? AND role='user'",
+                            (session_id, ordinal)).fetchone()
+    if not message:
+        return False
+    text = visible(dict(message))
+    if not confirms_delivery(text):
+        return False
+    if Path(path).name in text:
+        return True
+    previous = index.execute("SELECT * FROM messages WHERE session_id=? AND ordinal>=? AND ordinal<? AND role='assistant' "
+                             'ORDER BY ordinal DESC LIMIT 1', (session_id, ordinal - 4, ordinal)).fetchone()
+    return bool(previous and Path(path).name in visible(dict(previous)))
+
+
 def quoted_rules(text):
     for part in CLAUSE.finditer(text):
         value = re.sub(r'^\s*(?:(?:[-•]|\d{1,3}[.)、])\s*)?', '', part[0]).strip(' \t，')
@@ -374,7 +397,10 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
         for item in data.get('files', []) + data.get('deliverables', []):
             ref = citation(row, item.get('ordinal'), item.get('evidence_time'))
             path = available_path(item['path'], cwd) or item['path']
-            inferred_status = item['status']
+            pinned = item['status'] == '用户确认' and (
+                row['kind'] == 'summary' or item.get('confirmed') is True
+            ) and recorded_confirmation(index, sid, item.get('ordinal'), path, visible)
+            inferred_status = '已交付' if item['status'] == '用户确认' and not pinned else item['status']
             if row['kind'] == 'summary' and inferred_status == '已交付' and PREVIEW_NAME.search(Path(path).stem):
                 inferred_status = '草稿'
             if Path(path).is_absolute() and matches_project(str(Path(path).parent), terms):
@@ -383,7 +409,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
                 first_seen[path] = min(first_seen.get(path, ref['time']), ref['time'])
             deliveries.append(entry(path, ref, task=item.get('task'), status=inferred_status,
                                     explicit_task=bool(item.get('task')), final=item.get('final', False),
-                                    pinned=item.get('confirmed', False) or (row['kind'] == 'log' and item['status'] == '用户确认'),
+                                    pinned=pinned,
                                     recorded=row['kind'] == 'log', legacy=True))
             delivery_by_name[Path(path).name].add(path)
 
@@ -466,8 +492,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
                 continue
             if task_anchor:
                 task_ordinal = ordinal
-            accepted = APPROVAL.search(text.strip()) or re.match(r'^(?:好的|可以|没问题)[，,。！! ]+.{0,50}(?:用|做|编辑|出|改成|定)', text)
-            if (ordinal - previous_ordinal <= 4 or path_matches) and accepted and not NEGATIVE.search(text[:45]):
+            if (ordinal - previous_ordinal <= 4 or path_matches) and confirms_delivery(text):
                 chosen = [p for p in path_matches if p in outputs or p in first_seen]
                 if not chosen and len(previous_delivery) == 1 and ordinal - previous_ordinal <= 4:
                     chosen = previous_delivery
