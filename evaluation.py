@@ -72,7 +72,7 @@ def score(cases, predict, measure):
 
 def can_publish(report):
     fields = report['metrics']
-    measured = (fields['deliverables']['precision'], fields['rules']['precision'], fields['attribution']['precision'])
+    measured = (fields['deliverables']['exact_project_accuracy'], fields['rules']['precision'], fields['attribution']['precision'])
     return (report['scored_projects'] >= 30 and report['user_verified_projects'] >= 10 and
             all(value is not None and value >= 0.9 for value in measured))
 
