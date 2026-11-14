@@ -243,6 +243,10 @@ def session_pages(session_id, start=0, limit=100, all_pages=False):
     while True:
         page = archive("session", "messages", session_id, "--from", cursor,
                        "--limit", limit, "--role", "user,assistant")
+        rows = page.get("messages", [])
+        if "next_from" not in page and len(rows) == limit:
+            # AgentsView's CLI reports the last ordinal and omits the cursor.
+            page["next_from"] = rows[-1]["ordinal"] + 1
         yield page
         next_cursor = page.get("next_from")
         if not all_pages or next_cursor is None or next_cursor <= cursor:
@@ -284,6 +288,23 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0):
     if around is not None and (start or text_offset):
         raise ValueError("Use around for a new lookup, or start and text_offset to continue")
     result = read_session(session_id, start=start, limit=limit, around=around)
+    if around is None and not text_offset and not result["messages"]:
+        # Tool-only entries can fill an archive page before dialogue filtering.
+        revision = result.get("revision")
+        for _ in range(3):
+            cursor = result["next_from"]
+            if cursor is None or cursor <= start:
+                break
+            start = cursor
+            result = read_session(session_id, start=start, limit=limit)
+            if revision and result.get("revision") and revision != result["revision"]:
+                raise ValueError("会话更新了，请重新读取")
+            if result["messages"]:
+                break
+        if not result["messages"] and result["next_from"] is not None and result["next_from"] > start:
+            result["status"] = "本页无可见对话，请继续翻页"
+    if around is None and not text_offset and not result["messages"] and result["next_from"] is None:
+        result["status"] = "没有更多可见对话"
     messages = result["messages"]
     result["messages"] = []
     # The source path can be recovered from the archived session metadata.

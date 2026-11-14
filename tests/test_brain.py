@@ -101,6 +101,29 @@ class BrainTest(unittest.TestCase):
         for page in (first, second):
             self.assertLessEqual(brain.response_size(page), brain.QUERY_BYTES)
 
+    def test_transcript_excerpt_skips_empty_filtered_archive_pages(self):
+        base = {"session_id": "deepseek-harness:test", "path": None, "revision": "1"}
+        pages = [{**base, "next_from": 3, "status": "内容不全", "messages": []},
+                 {**base, "next_from": 6, "status": "ok", "messages": [{"ordinal": 4, "text": "Visible reply"}]}]
+        with patch.object(brain, "read_session", side_effect=pages) as read:
+            page = brain.session_excerpt(base["session_id"], limit=3)
+        self.assertEqual(read.call_args.kwargs["start"], 3)
+        self.assertEqual(page["messages"][0]["ordinal"], 4)
+
+    def test_archive_pages_continue_past_filtered_ordinals_without_cursor(self):
+        entry = lambda ordinal, text, system=False: {"ordinal": ordinal, "role": "user", "content": text,
+                                                     "is_system": system}
+        metadata = {"session": {"agent": "deepseek-harness"}}
+        replies = [metadata,
+                   {"messages": [entry(1, "system", True), entry(3, "system", True)], "transcript_revision": "1"},
+                   metadata,
+                   {"messages": [entry(7, "Visible turn")], "transcript_revision": "1"}]
+        with patch.object(brain, "archive", side_effect=replies) as archive:
+            page = brain.session_excerpt("deepseek-harness:test", limit=2)
+        self.assertEqual(archive.call_args.args[3:5], ("--from", 4))
+        self.assertEqual(page["messages"][0]["ordinal"], 7)
+        self.assertEqual(page["status"], "ok")
+
     def test_model_uses_evidence_and_caches_revision(self):
         session = {"messages": [{"ordinal": 1, "text": "Delivered /tmp/fictional.md", "time": "2030-01-01T00:00:00Z"}],
                    "revision": "1", "time": None, "source": "kimi-work"}
