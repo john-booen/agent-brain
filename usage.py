@@ -7,8 +7,16 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
-def token_counter():
+def token_counter(directory=None):
     try:
+        import sys
+        if directory:
+            modules = directory / 'tokenizer' / 'modules'
+            if modules.is_dir():
+                sys.path.append(str(modules))
+            cache = directory / 'tokenizer' / 'cache'
+            if cache.is_dir() and not os.environ.get('TIKTOKEN_CACHE_DIR'):
+                os.environ['TIKTOKEN_CACHE_DIR'] = str(cache)
         import tiktoken
         # An explicit local cache keeps this feature usable offline. The tokenizer loads it only if present.
         from hashlib import sha1

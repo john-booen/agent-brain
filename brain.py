@@ -1446,7 +1446,7 @@ def call_tool(db, name, args):
 
 
 def mcp(db):
-    count_tokens = usage.token_counter()
+    count_tokens = usage.token_counter(DATA)
     source = os.environ.get('AGENT_BRAIN_SOURCE')
     origin = os.environ.get('AGENT_BRAIN_USAGE_ORIGIN', 'client')
     if origin not in {'client', 'test'}:
