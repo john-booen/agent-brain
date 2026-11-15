@@ -245,6 +245,10 @@ fs.stat = async (file, ...args) => {
         self.assertLessEqual(brain.response_size(result), brain.QUERY_BYTES)
         self.assertGreater(result['next_offset'], 0)
         self.assertEqual(self.tool('read_file', project='Atlas', path=v1.name, section='Valuation'), result)
+        self.assertEqual(self.tool('read_file', project='Atlas', path=v1.name, section='Valuation',
+                                   max_chars=3500), result)
+        with self.assertRaisesRegex(ValueError, 'Invalid max_chars'):
+            self.tool('read_file', project='Atlas', path=v1.name, max_chars=0)
         with self.assertRaisesRegex(ValueError, '登记'):
             self.tool('read_file', project='Atlas', path=str(v2))
         v1.unlink()
@@ -325,7 +329,7 @@ fs.stat = async (file, ...args) => {
         args = {'project':'Atlas','path':'notes.md','session_id':sid}
         self.assertIn('From input.', self.tool('read_file', **args, ordinal=0)['text'])
         self.assertIn('From output.', self.tool('read_file', **args, ordinal=1)['text'])
-        with self.assertRaisesRegex(ValueError, '引用'):
+        with self.assertRaisesRegex(ValueError, '尚未按这条消息登记.*可直接读取附件'):
             self.tool('read_file', **args, ordinal=2)
         attachment.unlink()
         with self.assertRaisesRegex(ValueError, '本机不可用'):

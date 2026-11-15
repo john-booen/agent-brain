@@ -43,6 +43,7 @@ ARRAYS = ("conclusions", "files", "todos", "blockers")
 # The configured clients use byte-based tokenizers. The serialized UTF-8
 # size bounds text tokens without sending project data to a token-count API.
 QUERY_BYTES = 1984
+FILE_TEXT_MAX_CHARS = 3000
 EXACT_MESSAGE_TOKENS = 800
 PROJECT_LOOKUP_BYTES = 448
 PROJECT_CARD_BYTES = QUERY_BYTES - PROJECT_LOOKUP_BYTES
@@ -1186,7 +1187,7 @@ def archived_file_reference(session_id, ordinal):
     return rows[0].get('files', []), session['cwd'], rows[0]['role']
 
 
-def read_project_file(db, path, project=None, section=None, page=None, max_chars=3000, offset=0,
+def read_project_file(db, path, project=None, section=None, page=None, max_chars=FILE_TEXT_MAX_CHARS, offset=0,
                       session_id=None, ordinal=None, expected_sha256=None):
     relocated = False
     source_role = None
@@ -1234,6 +1235,8 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
                         verified_matches.add(candidate)
                 if verified_matches:
                     matches = verified_matches
+            if not matches and len(source) == 1 and source_role == 'user':
+                raise ValueError('该引用对应的原始资料尚未按这条消息登记。当前会话如已提供附件，可直接读取附件')
             if len(matches) != 1:
                 raise ValueError('该引用未指向唯一的登记文件，请核对原始消息或使用登记的完整路径')
             path = matches.pop()
@@ -1273,7 +1276,7 @@ def read_project_file(db, path, project=None, section=None, page=None, max_chars
         result['registered_copy'] = True
     if not body:
         return {**result, 'status': '未提取到文本'}
-    low, high = 0, min(max_chars, max(0, len(body) - offset))
+    low, high = 0, min(max_chars, FILE_TEXT_MAX_CHARS, max(0, len(body) - offset))
     while low < high:
         size = (low + high + 1) // 2
         result.update(text=body[offset:offset + size], next_offset=offset + size if offset + size < len(body) else None)
@@ -1729,7 +1732,7 @@ TOOLS = {
                   {'path': {**STRING, 'maxLength': 1500}, 'project': {**STRING, 'maxLength': 180},
                    'session_id': {**STRING, 'maxLength': 350}, 'ordinal': {**OFFSET, 'maximum': 2**63 - 1},
                    'section': {**STRING, 'maxLength': 160}, 'page': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
-                   'max_chars': {'type': 'integer', 'minimum': 1, 'maximum': 3000}, 'offset': OFFSET,
+                   'max_chars': {'type': 'integer', 'minimum': 1}, 'offset': OFFSET,
                    'expected_sha256': {**STRING, 'maxLength': 64}}, ['path']),
     "log_work": ("Record project work.",
                  {"project": STRING, "summary": STRING, "source": {"type": "string", "enum": LOG_SOURCES},
