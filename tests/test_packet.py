@@ -798,6 +798,33 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(finish, 1)
         self.assertEqual(json.loads(raw)['time'], old)
 
+    def test_tagged_delivery_requires_an_assistant_handoff_reference(self):
+        sid = 'kimi-work:fictional-delivery-tag'
+        report = self.root / 'report.md'
+        report.write_text('FILE_BODY_STAYS_LOCAL')
+        self.archive_messages(sid, 'Atlas', [('user', 'Please prepare the report.'),
+            ('assistant', 'We can consider several ways to approach the report.'),
+            ('assistant', f'Delivered the report at `{report}`.'),
+            ('assistant', 'The revised message is ready to send to the participants in the final schedule.')])
+        with sqlite3.connect(self.data/'agentsview'/'sessions.db') as index:
+            for col in ('agent', 'deleted_at', 'relationship_type', 'first_message'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute("UPDATE sessions SET agent='kimi-work'")
+        args = (self.db, self.data, {'enabled': True}, 1, brain.visible,
+                brain.packet.paths_in, brain.json_text, brain.model, brain.clean)
+        for refs, expected in (([0, 1, 99], []), ([0, 2, 3, 99], [2, 3])):
+            with self.subTest(refs=refs):
+                reply = {'summary':'Fixture tag.', 'tags':['讨论', '交付'],
+                         'anchors':[0], 'delivery_anchors':refs}
+                with patch.object(brain.eco, 'call', return_value=reply) as call:
+                    self.assertEqual(brain.recall.tag_batch(*args)['indexed'], 1)
+                    self.assertNotIn('FILE_BODY_STAYS_LOCAL',brain.json_text(call.call_args.args[2]))
+                saved = json.loads(self.db.execute('SELECT data FROM recall_segments WHERE session_id=?',(sid,)).fetchone()[0])
+                self.assertEqual(saved['delivery_anchors'], expected)
+                self.assertEqual('交付' in saved['tags'], bool(expected))
+                self.assertIn('讨论', saved['tags'])
+                self.db.execute('DELETE FROM recall_segments WHERE session_id=?',(sid,))
+
     def test_health_reports_source_files_separately_from_indexed_sessions(self):
         (self.data / 'coverage.json').write_text(json.dumps({'sources': {
             'codex': {'found': 8, 'prepared': 1, 'failed': 1, 'failureReasons': {'SOURCE_CHANGED': 1}},

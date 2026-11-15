@@ -1099,11 +1099,21 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
                     result['status'] = 'invalid_anchors'
                     continue
                 deliveries = answer.get('delivery_anchors')
-                deliveries = [n for n in deliveries if type(n) is int and by_ordinal.get(n,{}).get('role')=='assistant'] if isinstance(deliveries, list) else []
+                supported_deliveries = {n for n, row in by_ordinal.items() if row['role'] == 'assistant'
+                                        and (row.get('files') or extraction.HANDOFF.search(row['text']))}
+                if isinstance(deliveries, list):
+                    deliveries = [n for n in deliveries if type(n) is int and n in supported_deliveries]
+                else:
+                    deliveries = []
+                delivery_anchors = list(dict.fromkeys([*before.get('delivery_anchors', []), *deliveries]))[-10:]
+                tags = list(dict.fromkeys([*before.get('tags', []),
+                                           *(clean(v)[:60] for v in tags[:8] if isinstance(v, str))]))[-12:]
+                if not delivery_anchors:
+                    tags = [tag for tag in tags if tag.strip() != '交付']
                 card = {'summary': clean(' '.join([before.get('summary',''), paragraph])).strip()[-220:],
-                        'tags': list(dict.fromkeys([*before.get('tags',[]), *(clean(v)[:60] for v in tags[:8] if isinstance(v,str))]))[-12:],
+                        'tags': tags,
                         'anchors': list(dict.fromkeys([*before.get('anchors',[]), *anchors]))[-10:],
-                        'delivery_anchors': list(dict.fromkeys([*before.get('delivery_anchors',[]), *deliveries]))[-10:],
+                        'delivery_anchors': delivery_anchors,
                         'time': before.get('time') or first, 'latest_time': index.execute('SELECT timestamp FROM messages WHERE session_id=? AND ordinal=?',
                                                                  (sid, finish)).fetchone()[0],
                         'source': index.execute('SELECT agent FROM sessions WHERE id=?', (sid,)).fetchone()[0],
