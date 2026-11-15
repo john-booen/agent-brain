@@ -442,6 +442,28 @@ fs.stat = async (file, ...args) => {
                       deliverables=[{'path': str(file), 'task': 'Figures', **fields}])
             self.assertNotIn('用户确认', self.tool('get_project', project=name, section='deliverables')['card'])
 
+    def test_confirmation_can_precede_a_separate_image_request(self):
+        path = self.root / 'slides.pptx'
+        path.write_bytes(b'Fictional handoff')
+        sid = 'codex:fictional-approval-next-task'
+        opening = '这版可以，很好。'
+        approval = opening + '\n\n请另帮我做一张文章配图，我好给内容组投稿'
+        self.archive_messages(sid, 'Atlas', [('assistant', f'已交付：{path}'), ('user', approval)])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex', session_id=sid,
+                  summary='Record the approval and the separate request.',
+                  deliverables=[{'path':str(path),'task':'Presentation','confirmed':True,'ordinal':1}])
+        self.assertIn('用户确认', self.tool('get_project',project='Atlas',section='deliverables')['card'])
+
+        delivery = {'session_id':sid,'ordinal':0,'role':'assistant','files':[str(path)]}
+        source = {'session_id':sid,'ordinal':1,'role':'user','text':approval}
+        claim = {'delivery_ref':'0','path':str(path)}
+        self.assertEqual(brain.recall.confirmation_source(claim,source,{'0':delivery}),delivery)
+        for followup in ('你再把这版的主办方改一下。', '你再给我生成一个横版的PPT。',
+                         '你再给我生成一个头图，我好把这版替换掉。'):
+            with self.subTest(followup=followup):
+                self.assertFalse(brain.packet.confirms_file_delivery(opening + '\n\n' + followup,str(path)))
+        self.assertFalse(brain.packet.confirms_file_delivery(approval,'poster.png'))
+
     def test_same_second_cross_client_handoff_uses_insertion_order(self):
         old = self.root / 'original.md'
         new = self.root / 'revision.md'

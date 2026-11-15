@@ -883,10 +883,10 @@ def confirmation_source(item, source, evidence, read_context=None):
     english = re.match(r'\s*(?:I (?:approve|accept)\b|(?:approved|accepted)[.!\s]*$)',text,re.I)
     negative = re.search(r'\b(?:not|never|reject\w*|draft|revise\w*|change\w*|after|once|if|yet|pending)\b',text,re.I)
     conditional = re.search(r'如果|等我|等你|先等|没确认|没通过|暂不|再看|前提|才定',text)
-    if conditional or not (packet.confirms_delivery(text) or english and not negative):
+    path = item.get('path')
+    if conditional or not (packet.confirms_file_delivery(text, path) or english and not negative):
         return None
     attachments = delivery.get('files', [])
-    path = item.get('path')
     if path:
         if path not in attachments:
             return None

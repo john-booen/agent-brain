@@ -23,6 +23,11 @@ CLAUSE = re.compile(r'(?m)[^。！？；\n]+')
 NON_USER = re.compile(r'^(?:\s*<system(?:>|-reminder)|\s*\[(?:Message|Reply) from |\s*\[Tool result\]|\s*\[Tool output\]|The following is the Codex agent history)', re.I)
 INSTRUCTIONS = re.compile(r'只(?:做|给|保留|改|用|写)|(?:一律|统一|对外|内部|数据|数字|口径|交付|必须|不要|不得|不能|不用|别|请按|以.{1,18}为准|改成|不做|脱敏|保守|以后|后续|今后|严格|保持)')
 APPROVAL = re.compile(r'(?:这(?:一)?[份个版]|就用这版).{0,22}(?:就是|作为|定为|当作)\s*(?:终版|定稿|正式版|最终版)|^按.{1,22}(?:定稿|定版)[。！!\s]*$|^(?:可以|好的|好|确认|通过|定稿|就这样|没问题|用这版)[。！!，,\s]*$')
+APPROVED_VERSION = re.compile(r'(?:没问题[，,]\s*)?这(?:一)?版(?:就)?可以(?:[，,]\s*(?:挺好的|很好))?[。！!]*')
+SEPARATE_IMAGE_REQUEST = re.compile(
+    r'(?:你|请|麻烦)?(?:再|另)(?:给我|帮我)?(?:做|生成|制作|设计)一[张个份]'
+    r'[^，。！？\n]{0,24}(?:头图|配图|封面图|横幅|海报)(?:[，,]我好[^，。！？\n]+)?[。！!]?'
+)
 NEGATIVE = re.compile(r'不要|不对|不行|还没|草稿|不满意|未通过|不是终版|未确认|别|重做')
 REVISION_REQUEST = re.compile(r'改成|改为|修改|调整|补充|重写|再改|再做|出一版|生成|重新|优化|完善')
 IRRELEVANT = re.compile(r'未(?:直接)?涉及|未提供具体|仅作为(?:上下文|背景)|仅提及|从未执行|无具体|不属于本项目')
@@ -282,6 +287,21 @@ def confirms_delivery(text):
     return bool(APPROVAL.search(text) and not (NEGATIVE.search(text) or REVISION_REQUEST.search(text)))
 
 
+def confirms_file_delivery(text, path):
+    if confirms_delivery(text):
+        return True
+    approval, separator, followup = text.strip().partition('\n\n')
+    if not path or not APPROVED_VERSION.fullmatch(approval):
+        return False
+    if not separator:
+        return True
+    # An explicitly approved document can precede a separate image request.
+    # Keep requests that revise the same artifact out of the confirmation path.
+    return (Path(path).suffix.lower() in {'.pptx', '.ppt', '.docx', '.doc', '.xlsx', '.xls', '.pdf'}
+            and bool(SEPARATE_IMAGE_REQUEST.fullmatch(followup.strip()))
+            and not re.search(r'改|调整|替换|重做|这版|上一版|原稿', followup))
+
+
 def recorded_confirmation(index, session_id, ordinal, path, visible):
     if index is None or not session_id or type(ordinal) is not int or ordinal < 0:
         return False
@@ -290,7 +310,7 @@ def recorded_confirmation(index, session_id, ordinal, path, visible):
     if not message:
         return False
     text = visible(dict(message))
-    if not confirms_delivery(text):
+    if not confirms_file_delivery(text, path):
         return False
     if Path(path).name in text:
         return True
