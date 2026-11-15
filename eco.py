@@ -8,9 +8,18 @@ MAX_OUTPUT = 7500
 RECALL_MAX_OUTPUT = 16000
 DAY_LIMIT = 5000
 WEEK_LIMIT = 30000
+ROUTE_COOLDOWN = timedelta(minutes=30)
 
 
 class BudgetUnavailable(RuntimeError):
+    pass
+
+
+class RouteCoolingDown(BudgetUnavailable):
+    pass
+
+
+class RouteUnavailable(RuntimeError):
     pass
 
 
@@ -61,17 +70,25 @@ def snapshot(db, settings, instant=None):
                    FROM eco_requests WHERE at>=?""", ((instant-timedelta(days=duration)).isoformat(),)).fetchone()
         windows[label] = {'used_or_reserved': used, 'unmeasured_or_held': held, 'limit': cap,
                           'warning': used * 5 >= cap * 4}
-    return {'unit': '积分', 'meter': '公开价未折扣上界，非服务商实扣', **windows}
+    result = {'unit': '积分', 'meter': '公开价未折扣上界，非服务商实扣', **windows}
+    boundary = (instant - ROUTE_COOLDOWN).isoformat()
+    latest = db.execute("""SELECT at,status FROM eco_requests WHERE at>? AND at<=?
+                        AND status IN ('ok','route_unavailable') ORDER BY at DESC LIMIT 1""",
+                        (boundary, instant.isoformat())).fetchone()
+    if latest and latest[1] == 'route_unavailable':
+        result['route_retry_after'] = (datetime.fromisoformat(latest[0]) + ROUTE_COOLDOWN).isoformat()
+    return result
 
 
 def reserve(db, settings, purpose, amount, *, enforce_budget=True):
     instant = datetime.now(timezone.utc)
     db.execute('BEGIN IMMEDIATE')
     try:
-        if enforce_budget:
-            state = snapshot(db, settings, instant)
-            if any(state[w]['used_or_reserved'] + amount > state[w]['limit'] for w in ('24h', '7d')):
-                raise BudgetUnavailable('Eco 积分预算不足')
+        state = snapshot(db, settings, instant)
+        if state.get('route_retry_after'):
+            raise RouteCoolingDown('Eco 路由暂不可用，等待连接恢复')
+        if enforce_budget and any(state[w]['used_or_reserved'] + amount > state[w]['limit'] for w in ('24h', '7d')):
+            raise BudgetUnavailable('Eco 积分预算不足')
         recent = db.execute("SELECT max(at) FROM eco_requests WHERE status='rate_limited'").fetchone()[0]
         if recent and instant - datetime.fromisoformat(recent) < timedelta(minutes=15):
             raise BudgetUnavailable('Eco 限流冷却中')
@@ -107,6 +124,9 @@ def call(db, settings, messages, purpose, send, encode, *, recall=False, enforce
         }, local_only=True, on_usage=bill.update)
         status = 'ok'
         return result
+    except RouteUnavailable:
+        status = 'route_unavailable'
+        raise
     except RuntimeError as exc:
         if type(exc).__name__ == 'ModelQuotaError':
             status = 'rate_limited'
@@ -125,7 +145,7 @@ def call(db, settings, messages, purpose, send, encode, *, recall=False, enforce
             reasoning = None
         with db:
             db.execute("""UPDATE eco_requests SET charge=?,status=?,input_tokens=?,output_tokens=?,reasoning_tokens=? WHERE id=?""",
-                       (charge, status if measured or status == 'rate_limited' else 'unmeasured',
+                       (charge, status if measured or status in ('rate_limited', 'route_unavailable') else 'unmeasured',
                         input_tokens if type(input_tokens) is int else None,
                         output_tokens if type(output_tokens) is int else None,
                         reasoning, request))

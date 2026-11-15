@@ -87,6 +87,8 @@ def report(db, directory):
     alerts = [f'{source} 有近期日志落后超过 1 小时' for source, info in sources.items() if info.get('lagged_over_60m')]
     if queue['oldest'] and queue['oldest'] < boundary:
         alerts.append('最旧未标记段落超过 24 小时')
+    if budget.get('route_retry_after'):
+        alerts.append('Eco 路由连接失败，冷却期间使用本机原文')
     for window, name in (('24h', '24 小时'), ('7d', '7 天')):
         if budget.get(window, {}).get('warning'):
             alerts.append(f'Eco {name}积分用量含预留已达预算的 80%')

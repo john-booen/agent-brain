@@ -3,6 +3,7 @@ import io
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 from pathlib import Path
 from unittest.mock import patch
@@ -195,6 +196,17 @@ class BrainTest(unittest.TestCase):
 
             with self.assertRaises(brain.ModelRouteError):
                 brain.eco.call(self.db,settings,[], 'test-stream', sender, brain.json_text)
+            with patch.object(brain, 'model') as blocked:
+                self.assertIn('route_retry_after', brain.eco.snapshot(self.db, settings))
+                with self.assertRaises(brain.eco.RouteCoolingDown):
+                    brain.eco.call(self.db,settings,[], 'test-second-client', blocked, brain.json_text)
+                blocked.assert_not_called()
+            expired = datetime.now(timezone.utc) - timedelta(minutes=31)
+            with self.db:
+                self.db.execute('UPDATE eco_requests SET at=? WHERE id=(SELECT max(id) FROM eco_requests)',
+                                (expired.isoformat(),))
+
+        self.assertNotIn('route_retry_after', brain.eco.snapshot(self.db, settings))
         def truncated(messages, **kwargs):
             kwargs['on_usage']({'prompt_tokens':1000,'completion_tokens':7500})
             raise brain.eco.OutputTruncated('Unexpected output ceiling')
@@ -202,7 +214,8 @@ class BrainTest(unittest.TestCase):
         with self.assertRaises(brain.eco.OutputTruncated):
             brain.eco.call(self.db,settings,[], 'test-output', truncated, brain.json_text)
         rows = self.db.execute('SELECT status,charge,reserved FROM eco_requests ORDER BY id').fetchall()
-        self.assertEqual([(r['status'],r['charge']) for r in rows], [('failed',9),('unmeasured',rows[1]['reserved']),('truncated',93)])
+        self.assertEqual([(r['status'],r['charge']) for r in rows], [
+            ('route_unavailable',9), ('route_unavailable',rows[1]['reserved']), ('truncated',93)])
         aggregate = brain.eco.snapshot(self.db,settings)['24h']
         self.assertEqual(aggregate['unmeasured_or_held'],rows[1]['reserved'])
 

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from http.client import HTTPException
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -1319,7 +1319,7 @@ class ModelQuotaError(RuntimeError):
         self.retry_after = retry_after
 
 
-class ModelRouteError(RuntimeError):
+class ModelRouteError(eco.RouteUnavailable):
     pass
 
 
@@ -1437,8 +1437,8 @@ def model(messages, schema=None, *, local_only=False, settings=None, on_usage=No
         if exc.code in (401, 403, 502, 503, 504):
             raise ModelRouteError(f"Model endpoint returned HTTP {exc.code}") from exc
         raise
-    except HTTPException as exc:
-        raise ModelRouteError('Model connection ended before the response completed') from exc
+    except (HTTPException, URLError, TimeoutError) as exc:
+        raise ModelRouteError('Model connection unavailable or interrupted') from exc
     if choice.get("finish_reason") == "length":
         raise eco.OutputTruncated("Model output reached its token budget")
     message = choice.get("message")

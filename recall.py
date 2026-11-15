@@ -1317,6 +1317,8 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             failure = '模型没有返回可核实的结论'
     except eco.BudgetUnavailable as exc:
         failure = str(exc)
+    except eco.RouteUnavailable:
+        failure = 'Eco 路由连接暂不可用'
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
         failure = '在线路线或索引暂时不可用'
     if result := local_result(failure):
