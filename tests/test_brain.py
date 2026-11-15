@@ -71,6 +71,15 @@ class BrainTest(unittest.TestCase):
         self.assertLessEqual(brain.response_size(page), brain.QUERY_BYTES)
         self.assertLessEqual(brain.response_size(second), brain.QUERY_BYTES)
 
+    def test_project_lookup_accepts_split_chinese_names_in_a_long_query(self):
+        main = brain.log_work(self.db, "晨星泰国", "Recorded the project.", "codex", create_project=True)
+        brain.log_work(self.db, "晨星泰国工厂可行性报告", "A separate study.", "codex", create_project=True)
+        query = "晨星 泰国工厂 募资 商业计划书 设备介绍"
+        result = brain.find_project(self.db, query)
+        self.assertEqual(result['projects'][0]['id'], main['project_id'])
+        self.assertEqual(brain.find_project(self.db, query, fuzzy=False)['projects'], [])
+        self.assertLessEqual(brain.response_size(result), brain.PROJECT_LOOKUP_BYTES)
+
     def test_short_card_keeps_a_complete_status_sentence_and_its_source(self):
         work = brain.log_work(
             self.db, "Fictional Atlas", "首轮已交付；" + "较长的说明" * 80 + "。",

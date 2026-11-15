@@ -630,7 +630,8 @@ def project_name_score(query, name, fuzzy):
         return 0.87
     if not fuzzy:
         return 0
-    if len(name) >= 3 and name in query:
+    chinese_name = re.fullmatch(r"[\u3400-\u9fff]+", name)
+    if len(name) >= 3 and (name in query or (chinese_name and name in query.replace(" ", ""))):
         return 0.86
     if len(query) >= 4:
         short, full = query.replace(" ", ""), name.replace(" ", "")
