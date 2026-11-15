@@ -1679,6 +1679,16 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual(''.join(parts),original)
             missing = self.tool('get_session',session_id=sid,ordinal=3)
             self.assertEqual((missing['status'],missing['messages']),('没命中',[]))
+            mixed = self.tool('get_session',session_id=sid,ordinal=2,around=1)
+            self.assertEqual([row['ordinal'] for row in mixed['messages']],[2])
+            self.assertIn('around=2',mixed['hint'])
+            self.assertLessEqual(brain.response_size(mixed),brain.QUERY_BYTES)
+            resumed = mixed['next_text_offset']
+            next_page = self.tool('get_session',session_id=sid,ordinal=2,around=1,text_offset=resumed)
+            self.assertEqual([row['ordinal'] for row in next_page['messages']],[2])
+            self.assertTrue(original[resumed:].startswith(next_page['messages'][0]['text']))
+            context = self.tool('get_session',session_id=sid,around=2,limit=3)
+            self.assertEqual(context['messages'][0]['ordinal'],0)
 
     def test_get_session_keyword_finds_literal_text_deep_in_one_message(self):
         sid = 'codex:fictional-keyword'

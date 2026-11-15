@@ -364,10 +364,10 @@ def keyword_message_excerpt(result, row, contains, offset, fits):
 
 
 def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, ordinal=None, contains=None):
-    if around is not None and (start or text_offset):
-        raise ValueError("Use around for a new lookup, or start and text_offset to continue")
     exact = ordinal is not None
-    if exact and (around is not None or start):
+    if not exact and around is not None and (start or text_offset):
+        raise ValueError("Use around for a new lookup, or start and text_offset to continue")
+    if exact and start:
         raise ValueError("Use ordinal with text_offset to read a single message")
     if contains is not None and (not exact or not contains.strip()):
         raise ValueError("Use a nonempty keyword with an exact message ordinal")
@@ -378,6 +378,8 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, o
         result = {"revision": archived["revision"], "status": "ok" if messages else "没命中", "messages": messages}
         if "route" in archived:
             result["route"] = archived["route"]
+        if around is not None:
+            result["hint"] = f"查相邻消息时单独传 around={ordinal}。"
         start = ordinal
     else:
         result = read_session_excerpt(session_id, start, limit, around)
@@ -411,7 +413,7 @@ def session_excerpt(session_id, start=0, limit=20, around=None, text_offset=0, o
     # The source path can be recovered from the archived session metadata.
     if result.get("path"):
         result["path"] = clip_bytes(result["path"], 225)
-    if around is not None:
+    if not exact and around is not None:
         prior = [row for row in messages if row["ordinal"] < around][-2:]
         for row in prior:
             preview = {**row, "text": clip_bytes(row["text"], 140)}
@@ -1837,6 +1839,7 @@ def mcp(db):
                               "Set local_only=true on every recall for local-only requests. Resolve session keys via sessions. "
                               "Check local evidence when omitted_claims appears. For a missing detail, use get_session with ordinal "
                               "and a literal keyword in contains. Read the full message when needed. "
+                              "For nearby messages use around alone as the center message number. "
                               "Use project, session_id and ordinal with read_file for a shared filename. "
                               "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals.")}
             elif method == "tools/list":
