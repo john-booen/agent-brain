@@ -836,6 +836,25 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(sources['kimi-work']['excluded_auxiliary_logs'], 1)
         self.assertNotIn('cowork', sources)
 
+    def test_kimi_health_counts_native_user_and_assistant_dialogue(self):
+        wire = self.root / 'wire.jsonl'
+        first_time = 1_784_001_000_000
+
+        def event(role, blocks, elapsed):
+            return {'type':'agent.message.appended', 'time':first_time + elapsed,
+                    'message': {'message': {'role': role, 'content': blocks}}}
+
+        user = event('user', [{'type':'text','text':'Fixture question.'}], 0)
+        assistant = event('assistant', [{'type':'think','text':'internal'},
+                                         {'type':'text','text':'Fixture final response.'}], 1000)
+        thought = event('assistant', [{'type':'think','text':'internal'}], 2000)
+        tool_call = event('assistant', [], 3000)
+        tool_result = event('tool', [{'type':'text','text':'Fixture tool response.'}], 4000)
+        for messages, delay in (([user], 0), ([user, assistant, thought, tool_call, tool_result], 1000)):
+            wire.write_text(''.join(json.dumps(message) + '\n' for message in messages))
+            expected = datetime.fromtimestamp((first_time + delay) / 1000, timezone.utc)
+            self.assertEqual(brain.health.latest_source_message(wire, wire), expected)
+
     def test_pending_collection_is_distinct_from_actual_missing_content(self):
         timestamp = brain.now()
         coverage = self.data / 'coverage.json'

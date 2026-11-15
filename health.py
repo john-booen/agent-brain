@@ -189,6 +189,21 @@ def recent_transcripts(index, directory, boundary):
     return result
 
 
+def kimi_wire_dialogue(wrapper):
+    message = wrapper.get('message') if isinstance(wrapper, dict) else None
+    if not isinstance(message, dict) or message.get('role') not in {'user', 'assistant'}:
+        return False
+    content = message.get('content')
+    if isinstance(content, str):
+        return bool(content.strip())
+    return isinstance(content, list) and any(
+        isinstance(part, dict) and (
+            part.get('type') in {'image_url', 'audio_url', 'video_url'}
+            or part.get('type') == 'text' and isinstance(part.get('text'), str) and part['text'].strip()
+        ) for part in content
+    )
+
+
 def latest_source_message(original, staged):
     # Compressed sources are already expanded in their staged copies when available.
     candidates = (original, staged) if original.suffix == '.jsonl' else (staged,)
@@ -217,6 +232,7 @@ def latest_source_message(original, staged):
                     continue
                 if not (kind in {'user','assistant','turn.prompt','context.append_message',
                                  'user/message','assistant/message'}
+                        or kind == 'agent.message.appended' and kimi_wire_dialogue(message)
                         or kind == 'response_item' and isinstance(payload,dict) and payload.get('type') == 'message'
                         and payload.get('role') in {'user','assistant'}):
                     continue
