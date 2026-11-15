@@ -201,8 +201,8 @@ def merge_candidates(db, active_only=False):
                 continue
             if row['session_id']:
                 sessions.add(row['session_id'])
-            files.update(item['path'] for item in data.get('files', []) + data.get('deliverables', [])
-                         if Path(item['path']).is_absolute())
+            files.update(path for item in data.get('files', []) + data.get('deliverables', [])
+                         if isinstance(path := item.get('path'), str) and Path(path).is_absolute())
         evidence[project['id']] = (sessions, files, len(rows))
     pairs = []
     for i, left in enumerate(projects):

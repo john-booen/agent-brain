@@ -33,6 +33,25 @@ class PacketTest(unittest.TestCase):
     def tool(self, name, **args):
         return brain.call_tool(self.db, name, args)
 
+    def test_duplicate_scan_accepts_handoffs_delivered_in_chat(self):
+        sid = 'codex:fictional-atlas-handoff'
+        handoff = 'Atlas has delivered the complete written handoff.'
+        self.archive_messages(sid, 'Atlas Reports', [('user', 'Prepare a handoff.'), ('assistant', handoff)])
+        report = self.root / 'Atlas report.md'
+        report.write_text('Fictional report.')
+        self.tool('log_work', project='Atlas Reports', source='codex', create_project=True, session_id=sid,
+                  summary='Recorded two handoff outputs.',
+                  deliverables=[{'task': 'Handoff', 'text': handoff, 'ordinal': 1},
+                                {'task': 'Report', 'path': str(report)}])
+        self.tool('log_work', project='Atlas Reports Poster', source='codex', create_project=True,
+                  summary='Referenced the same report.',
+                  deliverables=[{'task': 'Report', 'path': str(report)}])
+        for project in ('Atlas Reports', 'Atlas Reports Poster'):
+            self.tool('log_work', project=project, source='codex', summary='Reviewed the project.')
+        match, = brain.packet.merge_candidates(self.db, active_only=True)
+        self.assertEqual({match['target'], match['duplicate']}, {'Atlas Reports', 'Atlas Reports Poster'})
+        self.assertEqual(match['shared_files'], 1)
+
     def test_optional_rule_topic_in_new_and_legacy_records(self):
         file = self.root / 'source.md'
         file.write_text('# Figures\nSource figures.')
