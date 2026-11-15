@@ -31,6 +31,9 @@ explicit readback or correction for that round. When several rounds fit, cite th
 and say what is needed to choose.
 For a confirmed item, quote the user's explicit acceptance and include "delivery_ref" for the
 earlier assistant handoff of that exact version. For a file use its path from that handoff.
+The user may edit or merge files outside the conversation. For a version actually used or sent,
+look for a user statement identifying that version. Report uncertainty when only a file handoff,
+its filename or an earlier approval is available.
 File timelines are local metadata. Follow the sequence of message references and report an overwrite or a
 fingerprint mismatch when it matters. Distinguish the current file from a described historical handoff.
 When same_path is present, only true entries refer to the exact path of the hashed file.

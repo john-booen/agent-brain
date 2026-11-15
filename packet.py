@@ -13,7 +13,7 @@ import file_text
 import notes
 
 
-VERSION = 28
+VERSION = 29
 FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -24,6 +24,10 @@ NON_USER = re.compile(r'^(?:\s*<system(?:>|-reminder)|\s*\[(?:Message|Reply) fro
 INSTRUCTIONS = re.compile(r'只(?:做|给|保留|改|用|写)|(?:一律|统一|对外|内部|数据|数字|口径|交付|必须|不要|不得|不能|不用|别|请按|以.{1,18}为准|改成|不做|脱敏|保守|以后|后续|今后|严格|保持)')
 APPROVAL = re.compile(r'(?:这(?:一)?[份个版]|就用这版).{0,22}(?:就是|作为|定为|当作)\s*(?:终版|定稿|正式版|最终版)|^按.{1,22}(?:定稿|定版)[。！!\s]*$|^(?:可以|好的|好|确认|通过|定稿|就这样|没问题|用这版)[。！!，,\s]*$')
 APPROVED_VERSION = re.compile(r'(?:没问题[，,]\s*)?这(?:一)?版(?:就)?可以(?:[，,]\s*(?:挺好的|很好))?[。！!]*')
+COMPLETED_EDIT = re.compile(
+    r'^我(?:已经|已)?(?:自己|手动|在本地)?(?:合并|汇总)?(?:并)?'
+    r'(?:修改|改|调整|合并)(?:完了|好了|完成了)[，,。]\s*'
+)
 SEPARATE_IMAGE_REQUEST = re.compile(
     r'(?:你|请|麻烦)?(?:再|另)(?:给我|帮我)?(?:做|生成|制作|设计)一[张个份]'
     r'[^，。！？\n]{0,24}(?:头图|配图|封面图|横幅|海报)(?:[，,]我好[^，。！？\n]+)?[。！!]?'
@@ -310,6 +314,9 @@ def recorded_confirmation(index, session_id, ordinal, path, visible):
     if not message:
         return False
     text = visible(dict(message))
+    if path in paths_in(text):
+        # A user can explicitly identify a finished local edit without a prior AI handoff.
+        text = COMPLETED_EDIT.sub('', text, count=1)
     if not confirms_file_delivery(text, path):
         return False
     if Path(path).name in text:

@@ -885,7 +885,7 @@ def packet_item(db, item, kind, compact=False):
     value = item.get('path')
     label = item.get('kind') or ''
     if kind == 'deliverables' or item.get('status'):
-        label = '用户确认' if item.get('pinned') else '终版候选' if item.get('final') else '最后交付待确认'
+        label = '用户确认' if item.get('pinned') else '已交付 · 实际使用待核'
         if item.get('kind') in {'旧版本', '草稿', '交付'}:
             label = f"{item['kind']} · {item['status']}"
     elif kind == 'rules' or item.get('scope'):
@@ -1841,6 +1841,8 @@ def mcp(db):
                               "and a literal keyword in contains. Read the full message when needed. "
                               "For nearby messages use around alone as the center message number. "
                               "Use project, session_id and ordinal with read_file for a shared filename. "
+                              "For an actually used file, look for the user's evidence for that exact version. "
+                              "Report uncertainty if only a handoff or earlier approval is available. "
                               "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals. "
                               "For a file delivery, include task and path in each deliverables item.")}
             elif method == "tools/list":

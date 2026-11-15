@@ -498,7 +498,7 @@ fs.stat = async (file, ...args) => {
                       summary='Updated the assigned owner in the same file.',
                       files=[{'path': str(path), 'status': '已交付'}])
         after = self.tool('get_project', project='Atlas', section='deliverables')['card']
-        self.assertIn('最后交付待确认', after)
+        self.assertIn('实际使用待核', after)
         self.assertIn('Release process', after)
         self.assertNotIn('用户确认', after)
         self.assertIn('Owner is Sam.', self.tool('read_file',project='Atlas',path=path.name)['text'])
@@ -535,7 +535,39 @@ fs.stat = async (file, ...args) => {
         with sqlite3.connect(self.data / 'agentsview/sessions.db') as index:
             index.execute("UPDATE messages SET content='还要修改。', dialogue_text='还要修改。' WHERE ordinal=2")
             index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
-        self.assertIn('最后交付待确认', delivery())
+        self.assertIn('实际使用待核', delivery())
+
+    def test_a_user_merged_final_requires_evidence_of_the_user_version(self):
+        draft = self.root / 'Agent 终版.md'
+        merged = self.root / 'User merged.md'
+        draft.write_text('# Agent delivery\nOriginal pitch.')
+        merged.write_text('# User merged\nThe pitch I used.')
+        sid = 'codex:fictional-user-merged'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', 'Prepare the Atlas pitch.'),
+            ('assistant', f'已交付：{draft}'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  session_id=sid, summary='Delivered the agent version.',
+                  deliverables=[{'task':'Pitch','path':str(draft),'ordinal':1,'final':True}])
+        pending = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(draft.name, pending)
+        self.assertIn('实际使用待核', pending)
+        self.assertNotIn(merged.name, pending)
+
+        confirmation = f'我合并修改完了，这份作为终版：{merged}'
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,0)',
+                          (sid, 2, 'user', '2026-01-03T00:00:02Z', confirmation, confirmation))
+            index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
+        self.tool('log_work', project='Atlas', source='codex', session_id=sid,
+                  summary='Recorded the user-confirmed merged file.',
+                  deliverables=[{'task':'Pitch','path':str(merged),'ordinal':2,'confirmed':True}])
+        approved = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(merged.name, approved)
+        self.assertIn('用户确认', approved)
+        self.assertIn(sid + '#2', approved)
+        self.assertIn('The pitch I used.', self.tool('read_file', project='Atlas', path=str(merged))['text'])
 
     def test_log_work_records_an_in_chat_delivery_with_its_assistant_excerpt(self):
         sid = 'kimi-work:fictional-chat-delivery'
@@ -556,7 +588,7 @@ fs.stat = async (file, ...args) => {
         correct = self.tool('get_project', project='Atlas', section='deliverables')['card']
         self.assertIn(original, correct)
         self.assertIn(sid + '#1', correct)
-        self.assertIn('终版候选', correct)
+        self.assertIn('实际使用待核', correct)
         record('wrong-role', 2, 'Keep it short and clear.')
         record('invented', 3, 'This excerpt did not appear.')
         history = self.tool('get_project', project='Atlas', section='history')['card']
