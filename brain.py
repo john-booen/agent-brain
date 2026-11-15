@@ -1841,7 +1841,8 @@ def mcp(db):
                               "and a literal keyword in contains. Read the full message when needed. "
                               "For nearby messages use around alone as the center message number. "
                               "Use project, session_id and ordinal with read_file for a shared filename. "
-                              "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals.")}
+                              "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals. "
+                              "For a file delivery, include task and path in each deliverables item.")}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
             elif method == "tools/call":
