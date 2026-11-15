@@ -119,29 +119,46 @@ def text_matches(index, terms, sessions=None):
     if sessions is not None:
         scope = ' AND m.session_id IN (SELECT value FROM json_each(?))'
         scope_args = [json.dumps(sorted(sessions),ensure_ascii=False)]
-    if index.execute("SELECT 1 FROM sqlite_master WHERE name='message_trigram_fts'").fetchone():
-        # AgentsView's detail=none trigram index accepts three-character terms, not phrases.
-        if all(len(term)>=3 for term in terms):
-            groups = []
-            for term in sorted(terms):
-                grams = sorted({term[i:i+3] for i in range(len(term)-2)})
-                groups.append('(' + ' AND '.join('"' + gram.replace('"','""') + '"' for gram in grams) + ')')
-            match = ' OR '.join(groups)
-            hits = index.execute('''SELECT m.session_id,m.ordinal,coalesce(m.dialogue_text,m.content,'')
-                FROM message_trigram_fts JOIN messages m ON m.id=message_trigram_fts.rowid
-                WHERE message_trigram_fts MATCH ? AND m.role IN ('user','assistant') AND m.is_system=0'''+scope,
-                (match,*scope_args))
-            encoded_terms = tuple(term.encode('utf-8') for term in terms)
-            def exact_hits():
-                for row in hits:
-                    text = row[2].casefold().encode('utf-8')
-                    if any(term in text for term in encoded_terms):
-                        yield row
+    text_column = "coalesce(m.dialogue_text,m.content,'')"
+    visible_rows = "m.role IN ('user','assistant') AND m.is_system=0"
 
-            return exact_hits()
-    clauses = ' OR '.join("instr(lower(coalesce(dialogue_text,content,'')),?)>0" for _ in terms)
-    return index.execute(f"""SELECT session_id,ordinal,coalesce(dialogue_text,content,'') FROM messages m
-        WHERE role IN ('user','assistant') AND is_system=0 AND ({clauses}){scope}""", (*sorted(terms),*scope_args))
+    def literal_clauses(values):
+        return ' OR '.join(f'instr(lower({text_column}),?)>0' for _ in values)
+
+    indexed = sorted(term for term in terms if len(term)>=3)
+    short = sorted(term for term in terms if len(term)<3)
+    if indexed and (not short or sessions is None) and index.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='message_trigram_fts'").fetchone():
+        # AgentsView's detail=none trigram index accepts three-character terms, not phrases.
+        groups = []
+        for term in indexed:
+            grams = sorted({term[i:i+3] for i in range(len(term)-2)})
+            groups.append('(' + ' AND '.join('"' + gram.replace('"','""') + '"' for gram in grams) + ')')
+        match = ' OR '.join(groups)
+        trigram_rows = f"""FROM message_trigram_fts JOIN messages m ON m.id=message_trigram_fts.rowid
+            WHERE message_trigram_fts MATCH ? AND {visible_rows}"""
+        if short:
+            # Scan the archive for short terms only. Keep the literal SQL comparison on
+            # indexed candidates so mixed searches retain the original matching semantics.
+            return index.execute(f"""WITH hit(id) AS (
+                SELECT m.id FROM messages m WHERE {visible_rows} AND ({literal_clauses(short)})
+                UNION
+                SELECT m.id {trigram_rows} AND ({literal_clauses(indexed)})
+            ) SELECT m.session_id,m.ordinal,{text_column} FROM hit JOIN messages m USING(id)""",
+                (*short,match,*indexed))
+        hits = index.execute(f"SELECT m.session_id,m.ordinal,{text_column} {trigram_rows}{scope}",
+                             (match,*scope_args))
+        encoded_terms = tuple(term.encode('utf-8') for term in indexed)
+
+        def exact_hits():
+            for row in hits:
+                text = row[2].casefold().encode('utf-8')
+                if any(term in text for term in encoded_terms):
+                    yield row
+
+        return exact_hits()
+    return index.execute(f"""SELECT m.session_id,m.ordinal,{text_column} FROM messages m
+        WHERE {visible_rows} AND ({literal_clauses(terms)}){scope}""", (*sorted(terms),*scope_args))
 
 
 def work_session_id(row):
