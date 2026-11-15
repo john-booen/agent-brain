@@ -37,7 +37,7 @@ Clients read compact project packets and request specific source sections when n
 
 - Codex: register the command as a local MCP server and install the skill in an available skills directory.
 - Claude Cowork: use a local Cowork plugin or local workspace instructions where the mode can access the command.
-- DeepSeek Harness: import the command as a local stdio connector and add the skill instructions to the working agent.
+- DeepSeek Harness: import the generated JSON as a local stdio connector and add the skill instructions to the working agent. For an existing connector with missing usage attribution, set `env.AGENT_BRAIN_SOURCE` to `deepseek-harness` in the connector editor, then save and reconnect.
 - Kimi Work: register a personal plugin with the local stdio server and the skill.
 - Antigravity: the installer stages its local MCP entry. Archive coverage depends on the client and source mode.
 
