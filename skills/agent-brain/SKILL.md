@@ -1,9 +1,11 @@
 ---
 name: agent-brain
-description: Recall project progress, decisions and deliverables across AI clients, and record completed work in the shared local project log.
+description: "共享大脑。查 Codex、Cowork、Kimi Work 或 DeepSeek Harness 的旧对话、项目进展、终版交付和已定要求时，先发现并使用 agent-brain MCP。Use it for cross-client project history and work logs."
 ---
 
 # Agent Brain
+
+When MCP tools are deferred, discover the `agent-brain` tools first. Use them for shared-brain requests such as 「查旧对话」「上次做到哪了」「接着做」. Keep a targeted lookup within the requested project and report any missing evidence.
 
 When the user asks to use only local records, set `local_only: true` explicitly on every `recall` call, including follow-up pages or rephrased questions. Preserve the local-only instruction when you pass the question to the tool. Include `project` when you already know the name. Stop once you have the requested fact and a verifiable source.
 
