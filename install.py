@@ -63,7 +63,7 @@ def install_kimi(home, data, command):
                           'category': 'productivity', 'defaultLocale': 'en-US', 'hostKind': 'local',
                           'platforms': ['macos']},
             'skills': './skills/', 'mcpServers': {'agent-brain': {
-                'command': 'sh', 'args': ['./bin/agent-brain-mcp'], 'cwd': './'}}}
+                'command': 'sh', 'args': ['./bin/agent-brain-mcp'], 'cwd': './', 'deferred': False}}}
     write(plugin / 'kimi.plugin.json', json.dumps(spec, ensure_ascii=False, indent=2) + '\n')
     write(plugin / 'bin/agent-brain-mcp', '#!/bin/sh\nexport AGENT_BRAIN_SOURCE=kimi-work\nexport AGENT_BRAIN_DATA='
           + shlex.quote(data) + '\nexec ' + shlex.join([command['command'], *command['args']]) + '\n')
