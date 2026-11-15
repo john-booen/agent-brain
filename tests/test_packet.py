@@ -1221,13 +1221,35 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             value = self.tool('recall',question='Atlas 接着做到哪了？')
             self.assertEqual((value['level'],value['route']),(3,'local'))
             self.assertTrue(value['reason'])
-            self.assertEqual([item['ordinal'] for item in value['evidence'][:2]],[0,2])
+            self.assertEqual([item['ordinal'] for item in value['evidence']],[0,2])
+            self.assertEqual(value['next_offset'],2)
             self.assertEqual(set(value['evidence'][1]['files']),{notes.name,evidence.name})
             self.assertNotIn('FILE_BODY_STAYS_LOCAL',brain.json_text(value))
             self.assertNotIn(str(report),brain.json_text(route.call_args.args[2]))
             focused = self.tool('recall',project='Atlas',question='Atlas 具体哪份报告?',local_only=True)
             self.assertEqual([item['ordinal'] for item in focused['evidence']],[1])
+            rest = self.tool('recall',project='Atlas',question='Atlas 接着做到哪了？',local_only=True,offset=2)
+            self.assertEqual([item['ordinal'] for item in rest['evidence']],[1])
             self.assertEqual(route.call_count,1)
+
+    def test_named_progress_uses_the_latest_logged_conclusion_with_the_delivery(self):
+        legacy_id = '12345678-1111-4222-8333-444444444444'
+        sid = 'codex:' + legacy_id
+        report = self.root / 'report.md'
+        report.write_text('FILE_BODY_STAYS_LOCAL')
+        self.archive_messages(sid, 'Atlas', [('assistant', f'Delivered `{report}`.'),
+            ('assistant', 'The current decision is to keep the phase closed.')])
+        self.tool('log_work', project='Atlas', create_project=True, summary='Delivered the report.',
+                  source='codex', session_id=sid, deliverables=[{'path':str(report),'task':'Report','ordinal':0}])
+        self.tool('log_work', project='Atlas', summary='Recorded the current decision.', source='codex',
+                  session_id=legacy_id, conclusions=[{'text':'Unconfirmed statement.','ordinal':999},
+                                                     {'text':'The phase stays closed.','ordinal':1}])
+        evidence = brain.recall.project_progress_evidence(
+            self.db,self.data/'agentsview'/'sessions.db',brain.resolve_project_id(self.db,'Atlas'),
+            'Atlas 做到哪了？',brain.visible,brain.packet.paths_in,brain.json_text,
+            lambda pid: brain.packet.load(self.db,self.data,pid,brain.visible,brain.clean,lazy=True)[0])
+        self.assertEqual(list(evidence),[(sid,1),(sid,0)])
+        self.assertIn('phase closed',evidence[sid,1]['text'])
 
     def test_implicit_local_project_matches_complete_names_without_guessing(self):
         alpha,_ = brain.ensure_project(self.db,'Atlas','fictional')

@@ -703,8 +703,23 @@ def project_progress_evidence(db, archive, project_id, question, visible, paths_
     result = {}
     with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
         index.row_factory = sqlite3.Row
+        work = packet.work_rows(db, project_id)
+        if work and work[-1]['kind'] == 'log':
+            latest = {**dict(work[-1]), 'session_id': work_session_id(work[-1])}
+            for item in json.loads(latest['data']).get('conclusions', []):
+                if type(item.get('ordinal')) is not int:
+                    continue
+                ref = packet.recorded_reference(index, latest, item, 'conclusions', visible)
+                if ref.get('pending'):
+                    continue
+                sid, ordinal = ref['session_id'], ref['ordinal']
+                rows = extraction.transcript(index, sid, visible, paths_in, encode, focused=True,
+                                             start=ordinal, end=ordinal)
+                if rows and rows[0]['text'].strip():
+                    result[sid, ordinal] = {**rows[0], 'session_id': sid}
+                    break
         recent = sorted(items, key=lambda item: (item['ref'].get('evidence_time') or item['ref']['time']), reverse=True)
-        # Keep one current report and the most recent separate, readable handoff.
+        # Pair the logged conclusion with a deliverable, or keep two separate handoffs.
         for item in [*items[:1], *recent]:
             ref = item['ref']
             sid, ordinal = ref['session_id'], ref['ordinal']
@@ -782,7 +797,7 @@ def local_text_excerpt(text, limit):
     return excerpt
 
 
-def local_evidence(evidence, encode, count, offset=0, reason=''):
+def local_evidence(evidence, encode, count, offset=0, reason='', first_page_limit=0):
     rows=list(evidence.values())
     by_session = defaultdict(list)
     for row in rows:
@@ -798,7 +813,7 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
     ranked = []
     seen = set()
     for position, row in enumerate(rows):
-        neighbor = adjacent.get((row['session_id'],row['ordinal'])) if position<16 else None
+        neighbor = adjacent.get((row['session_id'],row['ordinal'])) if first_page_limit <= position < 16 else None
         for item in (row,neighbor) if neighbor else (row,):
             key = item['session_id'],item['ordinal']
             if key not in seen:
@@ -809,7 +824,8 @@ def local_evidence(evidence, encode, count, offset=0, reason=''):
     if reason:
         result['reason']=reason
     limit=800
-    for position,row in enumerate(ranked[offset:],offset):
+    end = first_page_limit if first_page_limit and not offset else None
+    for position,row in enumerate(ranked[offset:end],offset):
         sid = row['session_id']
         ref = session_refs.setdefault(sid,str(len(session_refs)+1))
         item={'session':ref,'ordinal':row['ordinal'],'role':row['role']}
@@ -1176,8 +1192,11 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         local = prioritize_logged_evidence(db,local_project,question,local_evidence_rows)
         if not local_project:
             local = prioritize_named_client(question,local)
+        first_page_limit = 0
         try:
             progress = project_progress_evidence(db,archive,local_project,question,visible,paths_in,encode,load_packet)
+            if len(progress) == 2:
+                first_page_limit = len(progress)
             if not progress and local_project and load_packet and re.search(r'[A-Z]{2}|[\u3400-\u9fff]{2}[0-9]',question):
                 packet_data = load_packet(local_project)
                 first_page = local_evidence(local,encode,count,reason=reason)
@@ -1188,7 +1207,7 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         if progress:
             local = {**progress, **{ref: row for ref, row in local.items()
                                    if (row['session_id'],row['ordinal']) not in progress}}
-        return local_evidence(local,encode,count,offset,reason) if local else None
+        return local_evidence(local,encode,count,offset,reason,first_page_limit) if local else None
 
     failure = '未找到可核出处'
     try:
