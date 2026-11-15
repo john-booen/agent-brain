@@ -77,7 +77,12 @@ class BrainTest(unittest.TestCase):
         query = "晨星 泰国工厂 募资 商业计划书 设备介绍"
         result = brain.find_project(self.db, query)
         self.assertEqual(result['projects'][0]['id'], main['project_id'])
-        self.assertEqual(brain.find_project(self.db, query, fuzzy=False)['projects'], [])
+        self.assertEqual(brain.find_project(self.db, query, fuzzy=False)['projects'], result['projects'])
+        with patch.object(brain, 'archive', return_value={}):
+            search = brain.find(self.db, query)
+        self.assertEqual(search['projects'], result['projects'])
+        self.assertEqual(search['matches'], [])
+        self.assertIn('recall', search['next'])
         self.assertLessEqual(brain.response_size(result), brain.PROJECT_LOOKUP_BYTES)
 
     def test_short_card_keeps_a_complete_status_sentence_and_its_source(self):

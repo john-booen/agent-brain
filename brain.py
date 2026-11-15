@@ -270,6 +270,8 @@ def session_message_text(row):
 def read_session(session_id, start=0, limit=30, all_pages=False, metadata=None, around=None, show_choices=False):
     meta = metadata if metadata is not None else archive("session", "get", session_id)
     meta = meta.get("session", meta)
+    if is_codex_review(meta):
+        raise ValueError('该会话属于 Codex 内部审核记录')
     transcript = []
     revision, next_from = "", None
     if around is None:
@@ -308,11 +310,13 @@ def read_session_excerpt(session_id, start, limit, around=None):
     with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=3)) as index:
         index.row_factory = sqlite3.Row
         index.execute('BEGIN')
-        meta = index.execute('''SELECT agent,ended_at,started_at,transcript_revision,file_path FROM sessions
+        meta = index.execute('''SELECT * FROM sessions
             WHERE id=? AND deleted_at IS NULL''',(session_id,)).fetchone()
         if not meta:
             raise ValueError('本机索引没有该会话')
         meta = dict(meta)
+        if is_codex_review(meta):
+            raise ValueError('该会话属于 Codex 内部审核记录')
         query = "SELECT ordinal,role,timestamp,dialogue_text,content,is_system FROM messages WHERE session_id=? AND role IN ('user','assistant')"
         if around is None:
             rows = index.execute(query+' AND ordinal>=? ORDER BY ordinal LIMIT ?', (session_id,start,limit+1)).fetchall()
@@ -550,12 +554,27 @@ def search_local_index(query):
                 yield sid, row['agent'], dict(row)
 
 
+def codex_review_session_ids():
+    path = DATA / 'agentsview' / 'sessions.db'
+    if not path.is_file():
+        return set()
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
+            return {sid for sid, in index.execute('''SELECT id FROM sessions
+                WHERE agent='codex' AND relationship_type='subagent'
+                AND (ltrim(first_message) LIKE ? OR ltrim(first_message) LIKE ?)''',
+                tuple(prefix + '%' for prefix in CODEX_REVIEW_PREFIXES))}
+    except (OSError, sqlite3.Error):
+        return set()
+
+
 def find(db, query, limit=5):
     q = normalized(query)
     if not q:
         raise ValueError("Enter a search term")
     result = {"projects": find_project(db, query, fuzzy=False)["projects"][:2], "matches": [], "status": "ok"}
     matches, seen = result["matches"], set()
+    internal = codex_review_session_ids()
     coverage = {source: item["status"] for source, item in source_status().items() if item["status"] != "已索引"}
     if coverage:
         result["coverage"] = coverage
@@ -568,10 +587,10 @@ def find(db, query, limit=5):
         for sid, agent, row in hits:
             if len(matches) >= limit:
                 break
-            if sid in seen:
+            if sid in seen or sid in internal:
                 continue
             text = visible(row)
-            if q not in normalized(text):
+            if text.startswith(CODEX_REVIEW_PREFIXES) or q not in normalized(text):
                 continue
             owners = db.execute('SELECT DISTINCT project_id FROM work WHERE session_id=? LIMIT 2',(sid,)).fetchall()
             hit_start = max(0, text.casefold().find(query.strip().casefold()) - 55)
@@ -604,8 +623,11 @@ def find(db, query, limit=5):
                 matches.pop()
             return result
     matches.sort(key=lambda item: item.get("project_id") or item.get("session_id") or item["path"])
-    if not matches and not result["projects"]:
-        result["status"] = "没命中"
+    if not matches:
+        if result['projects']:
+            result['next'] = '未找到完全匹配的原话。可按项目和具体问题使用 recall。'
+        else:
+            result['status'] = '没命中'
     return result
 
 
@@ -629,11 +651,11 @@ def project_name_score(query, name, fuzzy):
         return 0.95
     if query in name:
         return 0.87
-    if not fuzzy:
-        return 0
     chinese_name = re.fullmatch(r"[\u3400-\u9fff]+", name)
     if len(name) >= 3 and (name in query or (chinese_name and name in query.replace(" ", ""))):
         return 0.86
+    if not fuzzy:
+        return 0
     if len(query) >= 4:
         short, full = query.replace(" ", ""), name.replace(" ", "")
         positions = iter(full)
@@ -1177,8 +1199,8 @@ def archived_file_reference(session_id, ordinal):
         return [], None, None
     with closing(sqlite3.connect(archive.as_uri() + '?mode=ro', uri=True, timeout=5)) as index:
         index.row_factory = sqlite3.Row
-        session = index.execute('SELECT cwd FROM sessions WHERE id=?', (session_id,)).fetchone()
-        if session is None:
+        session = index.execute('SELECT * FROM sessions WHERE id=?', (session_id,)).fetchone()
+        if session is None or is_codex_review(dict(session)):
             return [], None, None
         rows = extraction.transcript(index, session_id, visible, packet.paths_in, json_text,
                                      focused=True, start=ordinal, end=ordinal)

@@ -1545,6 +1545,35 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                 index.execute("UPDATE sessions SET deleted_at='2026-01-01T00:00:00Z'")
             self.assertEqual(self.tool('search',query='glass compass')['status'],'没命中')
 
+    def test_shared_search_and_history_skip_only_internal_reviews(self):
+        review = 'codex:fictional-review'
+        normal = 'codex:fictional-project-subtask'
+        term = 'The fictional copper compass is ready.'
+        prefix = brain.CODEX_REVIEW_PREFIXES[0]
+        self.archive_messages(review, 'Approval record', [('user', prefix), ('assistant', term)])
+        with sqlite3.connect(self.data/'agentsview'/'sessions.db') as index:
+            for col in ('agent', 'relationship_type', 'first_message', 'deleted_at', 'file_path', 'ended_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute("UPDATE sessions SET agent='codex',relationship_type='subagent',first_message=?", (prefix,))
+            index.execute("INSERT INTO sessions(id,agent,relationship_type,first_message) VALUES(?,'codex','subagent','Project check')", (normal,))
+            index.execute("INSERT INTO messages VALUES(?,0,'assistant','2026-01-01T00:00:00Z',?,?,0)", (normal, term, term))
+
+        def search_candidates(query, limit):
+            yield review, 'codex', {'role':'assistant', 'ordinal':1, 'content':term}
+            yield normal, 'codex', {'role':'assistant', 'ordinal':0, 'content':term}
+
+        with patch.object(brain, 'search_matches', side_effect=search_candidates):
+            self.assertEqual([hit['session_id'] for hit in self.tool('search', query='copper compass')['matches']], [normal])
+        with patch.object(brain, 'archive', side_effect=RuntimeError('Loopback unavailable')):
+            self.assertEqual([hit['session_id'] for hit in self.tool('search', query='copper compass')['matches']], [normal])
+            with self.assertRaisesRegex(ValueError, '内部审核'):
+                self.tool('get_session', session_id=review, ordinal=1)
+        info = {'agent':'codex', 'relationship_type':'subagent', 'first_message':prefix}
+        with patch.object(brain, 'archive', return_value={'session':info}) as route:
+            with self.assertRaisesRegex(ValueError, '内部审核'):
+                self.tool('get_session', session_id=review, ordinal=1)
+            route.assert_called_once_with('session','get',review)
+
     def test_get_session_falls_back_and_paginates_long_original_text(self):
         sid = 'kimi-work:fictional-local-excerpt'
         original = '保留第一版口径。' * 475
