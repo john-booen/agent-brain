@@ -1050,8 +1050,17 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         recent_attempts = {(sid,start,finish) for sid,start,finish in db.execute(
             'SELECT session_id,start,finish FROM recall_tag_attempts WHERE at>=?', (cutoff,))}
-        queue = sorted((item for item in pending_segments(db,index) if item[:3] not in recent_attempts),
-                       key=lambda x: (bool(x[4] and x[4]>=day), bool(x[0] in owners), x[4] or ''), reverse=True)
+        recent_segments, history_segments = [], []
+        for item in pending_segments(db, index):
+            if item[:3] in recent_attempts:
+                continue
+            target = recent_segments if item[4] and item[4] >= day else history_segments
+            target.append(item)
+        # Use the last untagged message to order recently active segments. A segment
+        # can span older history, so sorting by its first message can jump the queue.
+        recent_segments.sort(key=lambda item: item[4])
+        history_segments.sort(key=lambda item: (item[0] in owners, item[4] or ''), reverse=True)
+        queue = recent_segments + history_segments
         attempts = 0
         for sid, start, finish, first, _, _ in queue[:max(30, limit)]:
             if attempts >= limit:

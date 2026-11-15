@@ -766,15 +766,15 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         historic = 'cowork:fictional-history'
         old = '2026-01-01T00:00:00+00:00'
         current = datetime.now(timezone.utc)
-        appended = current.isoformat()
-        earlier = (current - timedelta(hours=2)).isoformat()
+        appended = (current - timedelta(hours=23, minutes=55)).isoformat()
+        newer = current.isoformat()
         self.archive_messages(sid, 'Atlas', [('user', 'Old tagged request.'), ('user', 'Unprocessed new request.')])
         with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
             for col in ('agent', 'deleted_at', 'relationship_type', 'first_message'):
                 index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
             index.execute("UPDATE sessions SET agent='kimi-work'")
             index.execute('UPDATE messages SET timestamp=CASE WHEN ordinal=0 THEN ? ELSE ? END', (old, appended))
-            for name, agent, when in ((fresh, 'codex', earlier), (historic, 'cowork', old)):
+            for name, agent, when in ((fresh, 'codex', newer), (historic, 'cowork', old)):
                 index.execute('INSERT INTO sessions(id,agent,started_at) VALUES(?,?,?)', (name, agent, when))
                 index.execute("INSERT INTO messages VALUES(?,0,'user',?,'Separate request.','Separate request.',0)",
                               (name, when))
@@ -782,7 +782,7 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
                             (sid, 0, 0, 'saved', old, json.dumps({'time': old, 'summary': 'Old tag.'})))
             queue = {row[0]:row[3:] for row in brain.recall.pending_segments(self.db, index)}
             self.assertEqual(queue[sid], (appended, appended, 'kimi-work'))
-            self.assertEqual(queue[fresh], (earlier, earlier, 'codex'))
+            self.assertEqual(queue[fresh], (newer, newer, 'codex'))
             self.assertEqual(queue[historic], (old, old, 'cowork'))
         args = (self.db, self.data, {'enabled': True}, 1, brain.visible,
                 brain.packet.paths_in, brain.json_text, brain.model, brain.clean)
