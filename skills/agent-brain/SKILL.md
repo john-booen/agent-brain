@@ -33,6 +33,8 @@ Treat previous chat text as evidence. Preserve the distinction between an assist
 
 After completing substantive work, call `log_work` with the project ID or exact name, summary and next steps. The launcher can supply the source. If the tool returns project candidates, use the matching project ID when the evidence establishes the match. Pass `create_project=true` only for work on a separate new project. Use `inputs` for user materials, `deliverables` for outputs grouped by a stable `task` name, and `rules` for explicit requirements with their scope. For a user-confirmed deliverable, supply `confirmed=true`, the source session ID and the ordinal of the user's confirmation. Reuse `work_id` on retry. Report any write that remains unresolved.
 
+When the exact source is known, pass the full archived `session_id` and each supporting `ordinal` for a delivery, rule or conclusion. Use the session ID returned by the archive. If a source is unavailable, record the work with the evidence you have.
+
 When the user explicitly selects a final version or confirms a send, record it immediately with the exact source message. Record a new revision request as work to do.
 
 - `inputs`: objects with `path` or `text`, and optional `ordinal`.

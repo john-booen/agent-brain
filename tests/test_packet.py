@@ -1117,6 +1117,24 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual([row['ordinal'] for row in last['evidence']],[11])
         self.assertNotIn('next_offset',last)
 
+    def test_recall_uses_legacy_codex_work_log_ids_without_rewriting_them(self):
+        bare = '12345678-1111-2222-3333-444444444444'
+        canonical = 'codex:' + bare
+        args = dict(project='Atlas', create_project=True, source='codex', session_id=bare,
+                    work_id='atlas-collector', summary='Saved collector settings.',
+                    conclusions=[{'text': 'Atlas collector uses a five minute interval.', 'ordinal': 3}])
+        result = self.tool('log_work', **args)
+        sessions, seeds = brain.recall.project_seeds(self.db, result['project_id'], True)
+        self.assertEqual(sessions, {canonical})
+        self.assertTrue(seeds[canonical][3][1])
+        evidence = {'other': {'session_id': 'codex:other', 'ordinal': 1},
+                    'anchor': {'session_id': canonical, 'ordinal': 3}}
+        ordered = brain.recall.prioritize_logged_evidence(
+            self.db, result['project_id'], 'What interval does the collector use?', evidence)
+        self.assertEqual(list(ordered), ['anchor', 'other'])
+        self.assertEqual(self.db.execute('SELECT session_id FROM work').fetchone()[0], bare)
+        self.assertFalse(self.tool('log_work', **args)['written'])
+
     def test_local_recall_promotes_only_matching_registered_source_messages(self):
         sid = 'codex:fictional-acceptance'
         self.archive_messages(sid, 'Atlas', [('user','Atlas acceptance?'),

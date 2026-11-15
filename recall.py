@@ -144,10 +144,19 @@ def text_matches(index, terms, sessions=None):
         WHERE role IN ('user','assistant') AND is_system=0 AND ({clauses}){scope}""", (*sorted(terms),*scope_args))
 
 
+def work_session_id(row):
+    sid = row['session_id']
+    if sid and row['kind'] == 'log' and row['source'] == 'codex' and re.fullmatch(
+        r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', sid, re.I
+    ):
+        return f'codex:{sid.lower()}'
+    return sid
+
+
 def project_seeds(db, project_id, prefer_logs):
     sessions, seeds = set(), defaultdict(dict)
     for row in packet.work_rows(db, project_id) if project_id else ():
-        sid = row['session_id']
+        sid = work_session_id(row)
         if not sid:
             continue
         sessions.add(sid)
@@ -619,7 +628,7 @@ def prioritize_logged_evidence(db, project_id, question, evidence):
 
     scores = {}
     for row in packet.work_rows(db, project_id):
-        sid = row['session_id']
+        sid = work_session_id(row)
         if row['kind']!='log' or not sid:
             continue
         item = json.loads(row['data'])
