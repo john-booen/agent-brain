@@ -537,6 +537,32 @@ fs.stat = async (file, ...args) => {
             index.execute("UPDATE sessions SET transcript_revision='2' WHERE id=?", (sid,))
         self.assertIn('实际使用待核', delivery())
 
+    def test_manual_save_keeps_historical_approval_separate_from_current_file(self):
+        path = self.root / 'pitch.md'
+        path.write_text('# Pitch\nOriginal pitch.')
+        sid = 'codex:fictional-manual-save'
+        self.archive_messages(sid, 'Atlas', [
+            ('assistant', f'已交付：{path}'),
+            ('user', '这份作为终版。'),
+        ])
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  session_id=sid, summary='Record the approved pitch.',
+                  deliverables=[{'path': str(path), 'task': 'Pitch', 'confirmed': True, 'ordinal': 1}])
+        args = {'project': 'Atlas', 'path': path.name}
+        original = self.tool('read_file', **args)
+        self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'built')
+
+        path.write_text('# Pitch\nManually revised pitch.')
+        self.assertEqual(brain.packet.prepare_file(self.db, str(path), brain.clean)[0], 'built')
+        card = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(f'{sid}#1', card)
+        self.assertIn('用户确认记录 · 本机当前版本待核', card)
+        current = self.tool('read_file', **args)
+        self.assertIn('Manually revised pitch.', current['text'])
+        self.assertNotEqual(current['sha256'], original['sha256'])
+        with self.assertRaisesRegex(ValueError, '文件指纹已变化'):
+            self.tool('read_file', **args, expected_sha256=original['sha256'])
+
     def test_a_user_merged_final_requires_evidence_of_the_user_version(self):
         draft = self.root / 'Agent 终版.md'
         merged = self.root / 'User merged.md'

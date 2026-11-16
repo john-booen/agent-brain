@@ -885,9 +885,12 @@ def packet_item(db, item, kind, compact=False):
     value = item.get('path')
     label = item.get('kind') or ''
     if kind == 'deliverables' or item.get('status'):
-        label = '用户确认' if item.get('pinned') else '已交付 · 实际使用待核'
+        # Approval cites an archived message. This path can now hold different bytes.
+        approval_label = '用户确认记录 · 本机当前版本待核' if value else '用户确认'
+        label = approval_label if item.get('pinned') else '已交付 · 实际使用待核'
         if item.get('kind') in {'旧版本', '草稿', '交付'}:
-            label = f"{item['kind']} · {item['status']}"
+            status = item['status']
+            label = f"{item['kind']} · {approval_label if status == '用户确认' else status}"
     elif kind == 'rules' or item.get('scope'):
         label = (label + ' · ' if label else '') + item['scope']
     if item.get('modeled'):
