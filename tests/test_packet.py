@@ -1064,6 +1064,30 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual((answer['level'],answer['route']), (3,'local'))
         self.assertIn(2,[row['ordinal'] for row in answer['evidence']])
 
+    def test_local_recall_recovers_inline_handoff_quotes_after_eco_filtering(self):
+        sid = 'codex:fictional-handoff-quote'
+        self.archive_messages(sid, 'Atlas', [
+            ('user', 'Please fix the monthly voice recap.'),
+            ('assistant', '已修复月报口播。缺日期时先说「按已有记录」，再报完成数。'
+                          '<tool_result>PRIVATE_TOOL</tool_result>\n\n## 正文\nPRIVATE_FILE_BODY'),
+        ])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('deleted_at','first_message','relationship_type'):
+                index.execute('ALTER TABLE sessions ADD COLUMN ' + col + ' TEXT')
+        self.tool('log_work', project='Atlas', create_project=True, source='codex', session_id=sid,
+                  summary='Fixed the monthly voice recap.')
+        args = {'project': 'Atlas', 'question': '月报口播修了什么？'}
+        with patch.object(brain.eco, 'call', side_effect=brain.eco.RouteUnavailable) as route:
+            local = self.tool('recall', **args, local_only=True)
+            route.assert_not_called()
+            fallback = self.tool('recall', **args)
+        self.assertNotIn('按已有记录', str(route.call_args.args[2]))
+        for answer in (local, fallback):
+            self.assertEqual(answer['route'], 'local')
+            handoff, = [row for row in answer['evidence'] if row['ordinal'] == 1]
+            self.assertIn('「按已有记录」', handoff['text'])
+            self.assertNotIn('PRIVATE_', handoff['text'])
+
     def test_recall_allows_whitespace_differences_and_checks_original_quote(self):
         evidence = {'1:1': {'role':'user','session_id':'codex:test','ordinal':1,
                             'text':'采用会议口径\n\t4,000 万。'}}
@@ -1540,7 +1564,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
     def test_local_recall_preserves_handoff_details_after_a_long_file_link(self):
         path = self.root / ('nested-' * 32) / 'Orders (EN).xlsx'
         details = '处理方式：订单数字、表格结构、345 个公式全部原样保留。'
-        text = f'翻译完成。\n\n[查看英文版表格](computer://{path})\n\n{details}\n\n[参考](https://example.invalid)'
+        text = (f'翻译完成。\n\n[查看英文版表格](computer://{path})\n\n{details}\n\n'
+                f'[本机出处](<{path}:12>) [参考](https://example.invalid)')
         source = {'session_id': 'cowork:fictional-orders', 'ordinal': 53, 'role': 'assistant',
                   'text': text, 'files': [str(path)]}
         result = brain.recall.local_evidence({'1:53': source}, brain.json_text, None)

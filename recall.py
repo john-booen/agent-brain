@@ -815,7 +815,7 @@ ARCHIVED_MESSAGE_REF = re.compile(
 def local_text_excerpt(text, limit, files=()):
     # The file names already appear beside the excerpt. Leave space for the handoff details.
     for path in files:
-        text = re.sub(r'\]\(<?(?:computer://)?' + re.escape(path) + r'>?\)', '](…)', text)
+        text = re.sub(r'\]\(<?(?:computer://)?' + re.escape(path) + r'(?::[0-9]+)?>?\)', '](…)', text)
     excerpt = extraction.text_excerpt(text, limit)
     if len(text) <= limit:
         return excerpt
@@ -831,7 +831,7 @@ def local_text_excerpt(text, limit, files=()):
     return excerpt
 
 
-def local_evidence(evidence, encode, count, offset=0, reason='', first_page_limit=0):
+def local_evidence(evidence, encode, count, offset=0, reason='', first_page_limit=0, read_handoff=None):
     rows=list(evidence.values())
     by_session = defaultdict(list)
     for row in rows:
@@ -883,8 +883,15 @@ def local_evidence(evidence, encode, count, offset=0, reason='', first_page_limi
         if row.get('later_version') and later.get('reported_format_quotes'):
             # The version note already carries exact format quotes from both deliveries.
             excerpt_limit = 28
-        files = row.get('files', ()) if row['role'] == 'assistant' else ()
-        item['text']=local_text_excerpt(row['text'],excerpt_limit,files)
+        text = row['text']
+        files = ()
+        if row['role'] == 'assistant':
+            files = row.get('files', ())
+            if read_handoff and row.get('ref') and row.get('time'):
+                handoff = read_handoff(sid, row['ordinal'])
+                if handoff and handoff['role'] == 'assistant' and handoff['time'] == row['time']:
+                    text = handoff['text']
+        item['text']=local_text_excerpt(text,excerpt_limit,files)
         sessions = {**result['sessions'],ref:sid}
         if row.get('later_version'):
             sessions[later_ref]=later_sid
@@ -1270,7 +1277,21 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
         if progress:
             local = {**progress, **{ref: row for ref, row in local.items()
                                    if (row['session_id'],row['ordinal']) not in progress}}
-        return local_evidence(local,encode,count,offset,reason,first_page_limit) if local else None
+        if not local:
+            return None
+        try:
+            with closing(sqlite3.connect(archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as index:
+                index.row_factory = sqlite3.Row
+                index.execute('BEGIN')
+
+                def read_handoff(sid, ordinal):
+                    rows = extraction.transcript(index,sid,visible,paths_in,encode,focused=True,local_handoff=True,
+                                                 start=ordinal,end=ordinal)
+                    return rows[0] if rows else None
+
+                return local_evidence(local,encode,count,offset,reason,first_page_limit,read_handoff=read_handoff)
+        except (OSError, sqlite3.Error):
+            return local_evidence(local,encode,count,offset,reason,first_page_limit)
 
     failure = '未找到可核出处'
     try:

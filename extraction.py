@@ -105,7 +105,8 @@ def selection_context(content, *, include_questions=True):
     return ' · '.join([selection, *prompts])
 
 
-def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused=False, start=0, end=None):
+def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused=False,
+               local_handoff=False, start=0, end=None):
     messages = []
     for row in index.execute("""SELECT ordinal,role,dialogue_text,content,is_system,timestamp FROM messages
                                WHERE session_id=? AND ordinal>=? AND ordinal<=?
@@ -146,12 +147,14 @@ def transcript(index, sid, visible, paths_in, encode, *, outbound=False, focused
         paths = list(dict.fromkeys(path for path in (*attachments, *paths_in(text), *uploads, *refs) if '://' not in path))[:12]
         limit = 1400 if row['role'] == 'user' else 700
         chat_sections = 0
-        if outbound and focused and row['role'] == 'assistant':
+        if focused and (outbound or local_handoff) and row['role'] == 'assistant':
             # Retain the assistant's handoff excerpt. Structured document and tool bodies stay local.
             if not paths:
                 chat_sections = len(re.findall(r'(?m)^#{1,6}\s+\S', text))
             text = re.split(r'\n\s*(?:#{1,6}\s|>|\||---+\s*\n|(?:文件)?正文[：:])', text, maxsplit=1)[0]
-            text = re.sub(r'(?:“[^”]*”|「[^」]*」)', ' ', text)[:600]
+            if outbound:
+                text = re.sub(r'(?:“[^”]*”|「[^」]*」)', ' ', text)
+            text = text[:600]
             limit = 600
         elif outbound and row['role'] == 'assistant':
             # Keep only the lead of an actual handoff. Omit quoted documents, tables and text after headings.
