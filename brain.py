@@ -1835,7 +1835,9 @@ def mcp(db):
                           "serverInfo": {"name": "agent-brain", "version": "0.1.0"}, "capabilities": {"tools": {}},
                           "instructions": (
                               "Start with recall for a specific past decision, configuration, handoff or delivery. "
-                              "Pass the known project. Use get_project for status or a known section and find_project for unclear names. "
+                              "Pass the known project. For a compound handoff, focus recall on the main task "
+                              "and follow its citations for related requirements and files. "
+                              "Use get_project for status or a known section and find_project for unclear names. "
                               "Set local_only=true on every recall for local-only requests. Resolve session keys via sessions. "
                               "Check local evidence when omitted_claims appears. For a missing detail, use get_session with ordinal "
                               "and a literal keyword in contains. Read the full message when needed. "
