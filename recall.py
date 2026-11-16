@@ -812,7 +812,10 @@ ARCHIVED_MESSAGE_REF = re.compile(
 )
 
 
-def local_text_excerpt(text, limit):
+def local_text_excerpt(text, limit, files=()):
+    # The file names already appear beside the excerpt. Leave space for the handoff details.
+    for path in files:
+        text = re.sub(r'\]\(<?(?:computer://)?' + re.escape(path) + r'>?\)', '](…)', text)
     excerpt = extraction.text_excerpt(text, limit)
     if len(text) <= limit:
         return excerpt
@@ -880,7 +883,8 @@ def local_evidence(evidence, encode, count, offset=0, reason='', first_page_limi
         if row.get('later_version') and later.get('reported_format_quotes'):
             # The version note already carries exact format quotes from both deliveries.
             excerpt_limit = 28
-        item['text']=local_text_excerpt(row['text'],excerpt_limit)
+        files = row.get('files', ()) if row['role'] == 'assistant' else ()
+        item['text']=local_text_excerpt(row['text'],excerpt_limit,files)
         sessions = {**result['sessions'],ref:sid}
         if row.get('later_version'):
             sessions[later_ref]=later_sid

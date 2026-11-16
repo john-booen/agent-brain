@@ -1537,6 +1537,21 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual({row['ordinal'] for row in evidence.values()},{0,28})
         self.assertIn('/tmp/orders.xlsx', next(row['files'] for row in evidence.values() if row['role']=='assistant'))
 
+    def test_local_recall_preserves_handoff_details_after_a_long_file_link(self):
+        path = self.root / ('nested-' * 32) / 'Orders (EN).xlsx'
+        details = '处理方式：订单数字、表格结构、345 个公式全部原样保留。'
+        text = f'翻译完成。\n\n[查看英文版表格](computer://{path})\n\n{details}\n\n[参考](https://example.invalid)'
+        source = {'session_id': 'cowork:fictional-orders', 'ordinal': 53, 'role': 'assistant',
+                  'text': text, 'files': [str(path)]}
+        result = brain.recall.local_evidence({'1:53': source}, brain.json_text, None)
+        handoff, = result['evidence']
+        self.assertEqual(handoff['ordinal'], 53)
+        self.assertEqual(handoff['files'], [path.name])
+        self.assertIn(details, handoff['text'])
+        self.assertIn('https://example.invalid', handoff['text'])
+        self.assertNotIn(str(path), handoff['text'])
+        self.assertLessEqual(len(brain.json_text(result).encode()), 800)
+
     def test_recall_keeps_early_user_requirements_in_a_long_session(self):
         sid = 'codex:fictional-long-task'
         self.archive_messages(sid,'Atlas',[
