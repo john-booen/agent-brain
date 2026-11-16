@@ -1365,13 +1365,17 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         for question in ('Atlas和Borealis 进度如何？','Atlas2怎么做','Codex里之前怎么算的？','那件事做到哪了？'):
             self.assertIsNone(lookup(self.db,question))
 
-    def test_unnamed_project_keeps_nearby_handoff_from_explicit_client(self):
+    def test_recall_keeps_nearby_handoff_from_explicit_client(self):
         evidence = {ref:{'session_id':sid} for ref,sid in [('a','cowork:meta'),('b','kimi-work:target'),
                     ('c','kimi-work:other'),('d','kimi-work:target'),('e','codex:context')]}
-        sort = brain.recall.prioritize_named_client
-        self.assertEqual(list(sort('Kimi Work 的可编辑文件在哪？',evidence)),['b','d','c','a','e'])
-        self.assertEqual(list(sort('Kimi Work 和 Codex 的结果有什么区别？',evidence)),list(evidence))
-        self.assertEqual(list(sort('哪里提到 Kimi Work？',evidence)),list(evidence))
+        named = brain.recall.named_client
+        prioritize = brain.recall.prioritize_client_evidence
+        self.assertEqual(list(prioritize(named('Kimi Work 的可编辑文件在哪？'),evidence)),['b','d','c','a','e'])
+        self.assertEqual(list(prioritize(named('上次在 Kimi Work 里完成的？'),evidence,{'kimi-work:target'})),
+                         ['b','d','a','c','e'])
+        self.assertEqual(list(prioritize(named('上次在 Kimi Work 里完成的？'),evidence,{'cowork:meta'})),list(evidence))
+        for question in ('Kimi Work 和 Codex 的结果有什么区别？','哪里提到 Kimi Work？','不要在 Kimi Work 里找。'):
+            self.assertIsNone(named(question))
 
     def test_recall_uses_old_choices_and_keeps_file_version_evidence(self):
         sid = 'codex:fictional-history'

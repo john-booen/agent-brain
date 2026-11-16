@@ -690,16 +690,27 @@ def named_project(db, question):
     return next(iter(candidates)) if len(candidates)==1 else None
 
 
-def prioritize_named_client(question, evidence):
-    text = question.casefold()
-    names = [(match.start(),client) for name,client in LOOKUP_CLIENTS.items()
+def named_client(question):
+    text = question.strip().casefold()
+    names = [(match.start(),match.end(),client) for name,client in LOOKUP_CLIENTS.items()
              for match in re.finditer(r'(?<![a-z0-9_-])'+re.escape(name)+r'(?![a-z0-9_-])',text)]
-    clients = {client for _,client in names}
-    if len(clients)!=1 or not any(start==0 for start,_ in names):
+    if len({client for _,_,client in names}) != 1:
+        return None
+    for start, end, client in names:
+        before = text[:start].rstrip()
+        if before.endswith(('不在','不是在','别在','不要在')):
+            continue
+        if start == 0 or (before.endswith('在') and text[end:].lstrip().startswith(('里','中','内','上'))):
+            return client
+    return None
+
+
+def prioritize_client_evidence(client, evidence, project_sessions=None):
+    if not client:
         return evidence
-    client = next(iter(clients))
     # A named client scopes the first few citations. The remaining cross-client results stay available.
-    client_refs = [ref for ref,row in evidence.items() if row['session_id'].startswith(client+':')]
+    client_refs = [ref for ref,row in evidence.items() if row['session_id'].startswith(client+':')
+                   and (project_sessions is None or row['session_id'] in project_sessions)]
     if not client_refs:
         return evidence
     session = evidence[client_refs[0]]['session_id']
@@ -1237,8 +1248,9 @@ def query(db, directory, settings, project, question, resolve, get_project, visi
             except (OSError, RuntimeError, ValueError, sqlite3.Error):
                 pass
         local = prioritize_logged_evidence(db,local_project,question,local_evidence_rows)
-        if not local_project:
-            local = prioritize_named_client(question,local)
+        if client := named_client(question):
+            sessions = project_seeds(db,local_project,False)[0] if local_project else None
+            local = prioritize_client_evidence(client,local,sessions)
         first_page_limit = 0
         try:
             progress = project_progress_evidence(db,archive,local_project,question,visible,paths_in,encode,load_packet)
