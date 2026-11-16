@@ -1073,6 +1073,22 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         no_amount = {**source,'text':'采用会议口径。优先检查 8 个元素。'}
         self.assertTrue(brain.recall.checked_claims({'claims':[replies['claims'][0]]}, {'1:2':no_amount}))
 
+    def test_recall_resolves_a_local_uri_or_unique_name_from_the_cited_message(self):
+        path = '/fictional/client outputs/Agenda.docx'
+        source = {'role':'assistant', 'session_id':'cowork:fictional', 'ordinal':2,
+                  'text':'The seven-page agenda is ready.', 'files':[path]}
+        claim = {'ref':'1:2', 'kind':'deliverable', 'text':source['text'], 'quote':source['text']}
+        candidates = [path, 'computer://' + path, 'Agenda.docx', '/unregistered/Agenda.docx',
+                      'computer://host/fictional/client outputs/Agenda.docx']
+        diagnostics = {}
+        verified = brain.recall.checked_claims({'claims':[{**claim, 'path':p} for p in candidates[:4]]},
+                                               {'1:2':source}, diagnostics)
+        self.assertEqual([row['file'] for row in verified], ['Agenda.docx'] * 3)
+        self.assertEqual(diagnostics['rejected'], {'path':1})
+        self.assertFalse(brain.recall.checked_claims({'claims':[{**claim, 'path':candidates[4]}]}, {'1:2':source}))
+        ambiguous = {**source, 'files':[path, '/another/Agenda.docx']}
+        self.assertFalse(brain.recall.checked_claims({'claims':[{**claim, 'path':'Agenda.docx'}]}, {'1:2':ambiguous}))
+
     def test_recall_retains_claims_and_uncertainty_before_pruning_quotes(self):
         answer = {'level':1, 'route':'Eco', 'cached':True, 'uncertain':'最终日期等对方确认。', 'evidence':[
             {'kind':'deliverable','text':'已完成报告。','session_id':'cowork:fictional','ordinal':n,
