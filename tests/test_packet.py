@@ -834,6 +834,60 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertTrue((dest / '本周各项目动态.md').is_file())
         self.assertEqual(brain.usage.observed_usage(self.data, date(2026, 11, 16))['days_with_client_calls'], 1)
 
+    def test_writeback_reports_match_legacy_ids_and_cross_client_logs(self):
+        raw = '00000000-1111-2222-3333-444444444444'
+        linked = 'cowork:fictional-writeback'
+        file = self.root / 'handoff.md'
+        file.write_text('Fictional handoff.')
+        for name, source, sid in (('codex-handoff', 'codex', 'codex:' + raw),
+                                  ('cowork-handoff', 'cowork', linked)):
+            self.tool('log_work', project='Atlas', create_project=True, work_id=name, source=source,
+                      session_id=sid, summary='Deliver the handoff.',
+                      files=[{'path': str(file), 'status': '已交付'}])
+            self.db.execute("UPDATE work SET kind='summary' WHERE id=?", (name,))
+            self.db.commit()
+        self.tool('log_work', project='Atlas', source='codex', session_id=raw,
+                  summary='Record the Codex handoff.', work_id='codex-writeback')
+        self.tool('log_work', project='Atlas', source='codex', session_id=linked,
+                  summary='Record the cross-client handoff.', work_id='cross-client-writeback')
+        self.tool('log_work', project='Atlas', source='codex', session_id='codex:unrelated',
+                  summary='Another conversation.', work_id='other-writeback')
+        instant = datetime.now(timezone.utc)
+        result = brain.usage.delivery_writeback(self.db, (instant - timedelta(days=1)).isoformat(),
+                                               (instant + timedelta(days=1)).isoformat())
+        self.assertEqual(result, {
+            'codex': {'delivery_sessions': 1, 'with_writeback': 1},
+            'cowork': {'delivery_sessions': 1, 'with_writeback': 1},
+        })
+
+    def test_health_writeback_uses_original_delivery_time_and_legacy_session_id(self):
+        raw = '00000000-1111-2222-3333-444444444444'
+        sid = 'codex:' + raw
+        self.archive_messages(sid, 'Atlas', [('assistant', 'Delivered the checklist.')])
+        instant = datetime.now(timezone.utc)
+        fresh = (instant - timedelta(hours=1)).isoformat()
+        old = (instant - timedelta(days=8)).isoformat()
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent', 'deleted_at', 'parser_malformed_lines', 'is_truncated'):
+                index.execute('ALTER TABLE sessions ADD COLUMN ' + col)
+            index.execute("UPDATE sessions SET agent='codex',parser_malformed_lines=0,is_truncated=0")
+            index.execute('UPDATE messages SET timestamp=?', (fresh,))
+            for other, stamp, role in (('cowork:old', old, 'assistant'), ('cowork:user', fresh, 'user')):
+                index.execute('INSERT INTO messages VALUES(?,?,?,?,?,?,0)',
+                              (other, 0, role, stamp, 'A message.', 'A message.'))
+        for other in (sid, 'cowork:old', 'cowork:user', 'cowork:missing'):
+            self.db.execute('INSERT INTO recall_segments VALUES(?,0,0,?,?,?)',
+                            (other, '1', fresh, json.dumps({'latest_time': fresh, 'delivery_anchors': [0]})))
+        self.db.commit()
+        self.tool('log_work', project='Atlas', create_project=True, source='codex',
+                  session_id=raw, summary='Recorded the checklist.')
+        with patch.object(brain.health, 'transcript_coverage', return_value={}), \
+             patch.object(brain.health, 'recent_transcripts', return_value={}), \
+             patch.object(brain.recall, 'pending_segments', return_value=[]):
+            coverage = brain.health.report(self.db, self.data)['log_work_7d']
+        self.assertEqual((coverage['delivery_sessions'], coverage['logged_sessions'], coverage['percent']),
+                         (1, 1, 100.0))
+
     def test_health_reports_collection_failure_and_backs_up_sqlite(self):
         (self.data / 'coverage.json').write_text(json.dumps({'exit': 1, 'packetRefresh': {'status': 'failed'}}))
         self.tool('log_work', project='Atlas', create_project=True, summary='Initial record.', source='codex')

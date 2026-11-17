@@ -32,7 +32,10 @@ def collection_state(info):
 
 def report(db, directory):
     coverage = read_json(directory / 'coverage.json')
-    boundary = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec='seconds')
+    instant = datetime.now(timezone.utc)
+    boundary = (instant - timedelta(hours=24)).isoformat(timespec='seconds')
+    week = (instant - timedelta(days=7)).isoformat()
+    delivery_sessions = set()
     totals = db.execute("""SELECT COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
                                  COALESCE(SUM(reserved_tokens),0) FROM packet_extraction_attempts WHERE at>=?""",
                          (boundary,)).fetchone()
@@ -68,6 +71,15 @@ def report(db, directory):
                 if item.get('message_gap_over_15m') or item.get('source_modified_over_15m_after_latest_index'):
                     status['incomplete'] = True
             if index.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone():
+                for sid, anchors in db.execute("""SELECT session_id,json_extract(data,'$.delivery_anchors')
+                        FROM recall_segments WHERE json_extract(data,'$.latest_time')>=?
+                        AND json_array_length(data,'$.delivery_anchors')>0""", (week,)):
+                    delivered = index.execute("""SELECT 1 FROM messages WHERE session_id=?
+                        AND ordinal IN (SELECT value FROM json_each(?)) AND role='assistant' AND is_system=0
+                        AND julianday(timestamp)>=julianday(?) AND julianday(timestamp)<=julianday(?) LIMIT 1""",
+                        (sid, anchors, week, instant.isoformat())).fetchone()
+                    if delivered:
+                        delivery_sessions.add(sid)
                 for _, _, _, first, latest, agent in recall.pending_segments(db, index):
                     queue['pending'] += 1
                     segment_is_recent = bool(latest and latest>=boundary)
@@ -92,12 +104,10 @@ def report(db, directory):
     for window, name in (('24h', '24 小时'), ('7d', '7 天')):
         if budget.get(window, {}).get('warning'):
             alerts.append(f'Eco {name}积分用量含预留已达预算的 80%')
-    week = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-    delivery_sessions = {sid for (sid,) in db.execute("""SELECT DISTINCT session_id FROM recall_segments
-        WHERE json_extract(data, '$.latest_time')>=? AND json_array_length(data, '$.delivery_anchors')>0""", (week,))}
-    logged = {sid for (sid,) in db.execute("""SELECT DISTINCT session_id FROM work
-        WHERE kind='log' AND occurred>=? AND session_id IS NOT NULL""", (week,))}
-    log_coverage = {'sample': '近七天已标记且含交付证据的会话', 'delivery_sessions': len(delivery_sessions),
+    logged = {usage.work_session_id(row) for row in db.execute("""SELECT source,kind,session_id FROM work
+        WHERE kind='log' AND occurred>=? AND occurred<=? AND session_id IS NOT NULL""",
+        (week, instant.isoformat()))}
+    log_coverage = {'sample': '近七天已标记且交付原消息在窗口内的会话', 'delivery_sessions': len(delivery_sessions),
                     'logged_sessions': len(delivery_sessions & logged),
                     'percent': round(100 * len(delivery_sessions & logged) / len(delivery_sessions), 1)
                     if delivery_sessions else None}

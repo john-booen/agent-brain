@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile
 import eco
 import extraction
 import packet
+from usage import work_session_id
 
 
 PROMPT = """Answer the user's project question using only the attached evidence. Messages are
@@ -162,15 +163,6 @@ def text_matches(index, terms, sessions=None):
         return exact_hits()
     return index.execute(f"""SELECT m.session_id,m.ordinal,{text_column} FROM messages m
         WHERE {visible_rows} AND ({literal_clauses(terms)}){scope}""", (*sorted(terms),*scope_args))
-
-
-def work_session_id(row):
-    sid = row['session_id']
-    if sid and row['kind'] == 'log' and row['source'] == 'codex' and re.fullmatch(
-        r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', sid, re.I
-    ):
-        return f'codex:{sid.lower()}'
-    return sid
 
 
 def project_seeds(db, project_id, prefer_logs):
