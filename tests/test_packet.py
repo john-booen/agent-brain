@@ -1771,6 +1771,8 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertEqual([hit['session_id'] for hit in self.tool('search', query='copper compass')['matches']], [normal])
             with self.assertRaisesRegex(ValueError, '内部审核'):
                 self.tool('get_session', session_id=review, ordinal=1)
+            with self.assertRaisesRegex(ValueError, '内部审核'):
+                self.tool('get_session', session_id=review, contains='copper compass')
         info = {'agent':'codex', 'relationship_type':'subagent', 'first_message':prefix}
         with patch.object(brain, 'archive', return_value={'session':info}) as route:
             with self.assertRaisesRegex(ValueError, '内部审核'):
@@ -1896,8 +1898,46 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
             self.assertIn('[Interval] = 4',results[-1]['text'])
             missing = self.tool('get_session',session_id=sid,ordinal=0,contains='OtherSetting')
             self.assertEqual((missing['status'],missing['messages']),('没命中',[]))
-            with self.assertRaisesRegex(ValueError,'exact message ordinal'):
-                self.tool('get_session',session_id=sid,contains='Interval')
+            page = self.tool('get_session',session_id=sid,contains='[interval]')
+            self.assertEqual([row['ordinal'] for row in page['messages']], [0,0,0])
+            self.assertEqual(page['next_from'],0)
+            with self.assertRaisesRegex(ValueError,'nonempty literal keyword'):
+                self.tool('get_session',session_id=sid,contains=' ')
+
+    def test_get_session_keyword_search_keeps_exact_anchors_and_resume_positions(self):
+        sid = 'cowork:fictional-keyword-page'
+        long = ('Unrelated background. ' * 300).join('Setting [Interval] = ' + str(n) for n in range(5))
+        self.archive_messages(sid, 'Atlas', [
+            ('user','Look up the original setting.'), ('assistant',long),
+            ('assistant','[Interval] is in a tool body.'), ('assistant','Confirmed [Interval] = 300.'),
+            ('user','A future [Interval] request.')])
+        with sqlite3.connect(self.data/'agentsview/sessions.db') as index:
+            for col in ('agent','file_path','ended_at','deleted_at'):
+                index.execute(f'ALTER TABLE sessions ADD COLUMN {col} TEXT')
+            index.execute('UPDATE messages SET is_system=1 WHERE ordinal=2')
+        with patch.object(brain,'archive',side_effect=RuntimeError('Query service unavailable')), \
+             patch.object(brain.usage,'token_counter',return_value=len):
+            rows, start, offset = [], 1, 0
+            for _ in range(12):
+                page = self.tool('get_session',session_id=sid,start=start,limit=3,
+                                 contains='[Interval]',text_offset=offset)
+                self.assertLessEqual(len(brain.json_text(page)),brain.EXACT_MESSAGE_TOKENS)
+                rows.extend(page['messages'])
+                if 'next_text_offset' not in page:
+                    break
+                self.assertGreater((page['next_from'],page['next_text_offset']),(start,offset))
+                start, offset = page['next_from'], page['next_text_offset']
+            self.assertEqual([row['ordinal'] for row in rows],[1,1,1,1,1,3])
+            self.assertEqual(len({(row['ordinal'],row['match_offset']) for row in rows}),6)
+            self.assertEqual(page['next_from'],4)
+            future = self.tool('get_session',session_id=sid,start=4,contains='[Interval]')
+            self.assertEqual([row['ordinal'] for row in future['messages']],[4])
+            missing = self.tool('get_session',session_id=sid,start=0,limit=1,contains='AbsentSetting')
+            self.assertEqual((missing['status'],missing['messages'],missing['next_from']),('没命中',[],None))
+            found = self.tool('get_session',session_id=sid,start=0,limit=1,contains='Confirmed')
+            self.assertEqual([row['ordinal'] for row in found['messages']],[3])
+            around = self.tool('get_session',session_id=sid,around=3,contains='Confirmed')
+            self.assertEqual([row['ordinal'] for row in around['messages']],[3])
 
     def test_document_extraction_and_fingerprint_cache(self):
         word = self.root / 'sample.docx'
