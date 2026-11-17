@@ -52,6 +52,7 @@ flowchart LR
 - `python3 brain.py index-obsidian /本机路径/笔记库` 只读索引明确选择的 Obsidian 库。
 - 用 `python3 brain.py watch-files /本机路径/常用交付文件夹` 一次选定工作目录。定时 `build-packets --files` 会检查其中保存的 PowerPoint。至少两页有辨识度的文本与同一项目已登记源稿一致时，该文件进入资料袋并显示「本机工作版 · 实际使用待核」。页内容在本机比对，已观察到的版本保留指纹。共用模板及跨项目混合匹配保留待归属。
 - `python3 brain.py weekly-report` 生成上一个完整周的私有报告。定时采集配置 `AGENT_BRAIN_WEEKLY=1` 后按北京时间每周一出报告。
+- 资料袋刷新时，会从 Codex、Cowork、Kimi Work 的原生 MCP 成功回执中，为缺少会话编号的日志补关联，保留原工作记录。可单独运行 `python3 brain.py reconcile-writebacks`，在 `health` 查看状态。没有可核回执或来源冲突时保持未关联。
 
 ## 虚构演示
 

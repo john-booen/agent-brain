@@ -107,7 +107,7 @@ def report(db, directory):
     for window, name in (('24h', '24 小时'), ('7d', '7 天')):
         if budget.get(window, {}).get('warning'):
             alerts.append(f'Eco {name}积分用量含预留已达预算的 80%')
-    logged = {usage.work_session_id(row) for row in db.execute("""SELECT source,kind,session_id FROM work
+    logged = {usage.work_session_id(row) for row in db.execute("""SELECT source,kind,session_id FROM work_with_sessions
         WHERE kind='log' AND occurred>=? AND occurred<=? AND session_id IS NOT NULL""",
         (week, instant.isoformat()))}
     log_coverage = {'sample': '近七天已标记且交付原消息在窗口内的会话', 'delivery_sessions': len(delivery_sessions),
@@ -122,6 +122,7 @@ def report(db, directory):
             'model_last_24h': dict(zip(('attempts','measured_input_tokens','measured_output_tokens','reserved_tokens'), totals)),
             'eco_credits': budget,
             'log_work_7d': log_coverage,
+            'writeback_association': read_json(directory / 'writeback-links.json'),
             'tag_queue': queue, 'alerts': alerts,
             'client_usage': usage.observed_usage(directory),
             'sqlite': db.execute('PRAGMA quick_check').fetchone()[0]}

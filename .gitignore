@@ -12,6 +12,7 @@
 !/health.py
 !/notes.py
 !/discovery.py
+!/writeback.py
 !/install.sh
 !/install.py
 !/.github/

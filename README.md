@@ -56,6 +56,7 @@ Use `read_file` with a registered absolute path or the project and a unique file
 - Index an explicitly chosen Obsidian vault with `python3 brain.py index-obsidian /path/to/vault`.
 - Select a working folder once with `python3 brain.py watch-files /path/to/deliveries`. Periodic `build-packets --files` checks saved PowerPoint files there. A working copy joins a project when at least two distinctive slide texts match registered sources from that project. Page matching runs locally, and the project card shows the file as a local working copy with adoption awaiting verification. File fingerprints retain the observed versions. Shared templates and mixed-project matches stay unassigned.
 - Generate the last complete week's private reports with `python3 brain.py weekly-report`. Set `AGENT_BRAIN_WEEKLY=1` in your periodic collector to generate them on Monday in Asia/Shanghai.
+- Packet refresh links logs with missing session IDs to successful native MCP receipts from Codex, Cowork and Kimi Work. It keeps the original work records intact. `python3 brain.py reconcile-writebacks` runs this local check separately; `health` shows its status. Unverified and conflicting origins remain unlinked.
 
 ## Fictional demo
 

@@ -889,6 +889,92 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual((coverage['delivery_sessions'], coverage['logged_sessions'], coverage['percent']),
                          (1, 1, 100.0))
 
+    def test_native_success_receipts_associate_three_clients_without_mutating_work(self):
+        archive = self.data/'agentsview'
+        archive.mkdir()
+        instant = datetime.now(timezone.utc)
+        stamp = instant.isoformat()
+        handoff = self.root/'handoff.md'
+        handoff.write_text('Fictional handoff.')
+        originals, files, sessions = {}, {}, set()
+        with sqlite3.connect(archive/'sessions.db') as index:
+            index.execute('CREATE TABLE sessions(id,agent,deleted_at,ended_at,started_at,file_path,relationship_type,first_message,transcript_revision)')
+            for source in ('codex','cowork','kimi-work'):
+                args = dict(project='Atlas', source=source, create_project=True, summary='Completed '+source,
+                            work_id=source+'-native', files=[{'path':str(handoff),'status':'已交付'}])
+                output = self.tool('log_work',**args)
+                originals[source] = args
+                sid = source+':fictional-origin'
+                sessions.add(sid)
+                path = self.data/'sources'/source/'fictional-origin.jsonl'
+                path.parent.mkdir(parents=True)
+                result = json.dumps(output)
+                if source == 'codex':
+                    rows = [{'type':'event_msg','timestamp':stamp,'payload':{'type':'item_completed',
+                        'thread_id':'fictional-origin','item':{'type':'McpToolCall','id':'call-codex',
+                        'server':'agent_brain','tool':'log_work','status':'completed','arguments':args,
+                        'result':{'content':[{'type':'text','text':result}]}}}}]
+                elif source == 'cowork':
+                    rows = [{'type':'assistant','message':{'content':[
+                        {'type':'tool_use','id':'call-cowork','name':'mcp__agent-brain__log_work','input':args}]}},
+                        {'type':'user','timestamp':stamp,'message':{'content':[
+                            {'type':'tool_result','tool_use_id':'call-cowork','content':result}]}}]
+                else:
+                    rows = [{'type':'context.append_loop_event','event':{'type':'tool.call',
+                        'toolCallId':'call-kimi','name':'mcp__plugin-agent-brain_agent-brain__log_work','args':args}},
+                        {'type':'context.append_loop_event','time':int(instant.timestamp()*1000),
+                         'event':{'type':'tool.result','toolCallId':'call-kimi','result':{'output':result}}}]
+                files[path] = '\n'.join(map(json.dumps,rows))+'\n'
+                path.write_text(files[path])
+                index.execute('INSERT INTO sessions VALUES(?,?,NULL,?,?,?,\'\',\'\',1)',(sid,source,stamp,stamp,str(path)))
+        raw = [tuple(row) for row in self.db.execute('SELECT * FROM work ORDER BY id')]
+        result = brain.writeback.reconcile(self.db,self.data,brain.clean,brain.resolve_project_id)
+        self.assertEqual((result['linked'],result['associated_logs']),(3,3))
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM work ORDER BY id')],raw)
+        self.assertTrue(all(path.read_text()==original for path,original in files.items()))
+        pid = output['project_id']
+        self.assertEqual({row['session_id'] for row in brain.packet.work_rows(self.db,pid)},sessions)
+        self.assertEqual(brain.recall.project_seeds(self.db,pid,True)[0],sessions)
+        report = brain.usage.delivery_writeback(self.db,(instant-timedelta(days=1)).isoformat(),
+                                               (instant+timedelta(days=1)).isoformat())
+        self.assertTrue(all(row=={'delivery_sessions':1,'with_writeback':1} for row in report.values()))
+        for args in originals.values():
+            self.assertFalse(self.tool('log_work',**args)['written'])
+        again = brain.writeback.reconcile(self.db,self.data,brain.clean,brain.resolve_project_id)
+        self.assertEqual((again['linked'],again['cached']),(0,3))
+
+    def test_writeback_association_rejects_review_copies_quotes_errors_and_conflicts(self):
+        archive = self.data/'agentsview'
+        archive.mkdir()
+        stamp = datetime.now(timezone.utc).isoformat()
+        args = dict(project='Atlas',create_project=True,source='codex',work_id='original',summary='Delivered Atlas.')
+        output = self.tool('log_work',**args)
+        with sqlite3.connect(archive/'sessions.db') as index:
+            index.execute('CREATE TABLE sessions(id,agent,deleted_at,ended_at,started_at,file_path,relationship_type,first_message,transcript_revision)')
+            for name in ('review','quoted','error','retry','wrong-thread','wrong-summary','valid'):
+                sid = 'codex:'+name
+                item = {'type':'McpToolCall','id':'call-'+name,'server':'agent_brain','tool':'log_work',
+                        'status':'completed','arguments':args,'result':{'content':[{'type':'text','text':json.dumps(output)}]}}
+                row = {'type':'event_msg','timestamp':stamp,'payload':{'type':'item_completed','thread_id':name,'item':item}}
+                if name=='quoted': row['type']='user'
+                if name=='error': item['result']['isError']=True
+                if name=='retry': item['result']['content'][0]['text']=json.dumps({**output,'written':False})
+                if name=='wrong-thread': row['payload']['thread_id']='another-conversation'
+                if name=='wrong-summary': item['arguments']={**args,'summary':'Unrelated work.'}
+                path = self.data/'sources/codex'/f'{name}.jsonl'
+                path.parent.mkdir(parents=True,exist_ok=True)
+                path.write_text(json.dumps(row)+'\n')
+                index.execute('INSERT INTO sessions VALUES(?,?,NULL,?,?,?,?,?,1)',
+                    (sid,'codex',stamp,stamp,str(path),'subagent' if name=='review' else '',
+                     brain.CODEX_REVIEW_PREFIXES[0] if name=='review' else ''))
+        result = brain.writeback.reconcile(self.db,self.data,brain.clean,brain.resolve_project_id)
+        self.assertEqual(result['linked'],1)
+        self.assertEqual(self.db.execute('SELECT session_id FROM work_with_sessions').fetchone()[0],'codex:valid')
+        self.db.execute('INSERT INTO work_session_links VALUES(?,?,?,?,?)',('original','codex:conflict','another',stamp,'proof'))
+        self.db.commit()
+        self.assertIsNone(self.db.execute('SELECT session_id FROM work_with_sessions').fetchone()[0])
+        self.assertIsNone(self.db.execute('SELECT session_id FROM work').fetchone()[0])
+
     def test_health_reports_collection_failure_and_backs_up_sqlite(self):
         (self.data / 'coverage.json').write_text(json.dumps({'exit': 1, 'packetRefresh': {'status': 'failed'}}))
         self.tool('log_work', project='Atlas', create_project=True, summary='Initial record.', source='codex')

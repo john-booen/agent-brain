@@ -28,6 +28,7 @@ import health
 import notes
 import eco
 import recall
+import writeback
 
 REPO = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("AGENT_BRAIN_DATA", Path.home() / "SharedBrain")).expanduser().resolve()
@@ -188,6 +189,7 @@ def connect():
     notes.schema(db)
     eco.schema(db)
     recall.schema(db)
+    writeback.schema(db)
     return db
 
 
@@ -610,7 +612,7 @@ def find(db, query, limit=5):
             text = visible(row)
             if text.startswith(CODEX_REVIEW_PREFIXES) or q not in normalized(text):
                 continue
-            owners = db.execute('SELECT DISTINCT project_id FROM work WHERE session_id=? LIMIT 2',(sid,)).fetchall()
+            owners = db.execute('SELECT DISTINCT project_id FROM work_with_sessions WHERE session_id=? LIMIT 2',(sid,)).fetchall()
             hit_start = max(0, text.casefold().find(query.strip().casefold()) - 55)
             excerpt = ('…' if hit_start else '') + text[hit_start:hit_start + 198]
             if hit_start+198 < len(text):
@@ -737,11 +739,11 @@ def reference(row, ordinal=None, time=None):
 
 def project_contents(db, project, include_log=False, model_sessions=()):
     rows = [(row, json.loads(row['data'])) for row in db.execute("""
-        SELECT w.*, e.reason AS excluded_reason, m.reason AS moved_reason FROM work w
+        SELECT w.*, e.reason AS excluded_reason, m.reason AS moved_reason FROM work_with_sessions w
         LEFT JOIN project_record_exclusions e ON e.work_id=w.id
         LEFT JOIN project_record_moves m ON m.work_id=w.id
         WHERE w.project_id=?
-        ORDER BY occurred DESC, kind='log' DESC, w.rowid DESC
+        ORDER BY occurred DESC, kind='log' DESC, w.work_rowid DESC
     """, (project["id"],))]
     cited_items = [(row, key, item) for row, data in rows if row['kind'] == 'log'
                    for key in ARRAYS for item in data.get(key, []) if type(item.get('ordinal')) is int]
@@ -1869,7 +1871,9 @@ def mcp(db):
                               "For an actually used file, look for the user's evidence for that exact version. "
                               "For local edits, check project deliverables for local working copies. "
                               "Report uncertainty if only a handoff or earlier approval is available. "
-                              "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals. "
+                              "Skip reading project tools for unrelated new work. Before the final reply after creating or revising "
+                              "a deliverable or settling a project decision, call log_work. Include a known current session ID; "
+                              "omit it when unknown instead of searching for it. "
                               "For a file delivery, include task and path in each deliverables item.")}
             elif method == "tools/list":
                 result = {"tools": mcp_tools()}
@@ -1923,6 +1927,9 @@ def build_packets(db, args):
     counts = {'projects': 0, 'rebuilt': 0, 'with_inputs': 0, 'with_deliverables': 0, 'with_rules': 0,
               'built': 0, 'cached': 0, 'missing': 0, 'unsupported': 0, 'unavailable': 0, 'unreadable': 0,
               'no_text': 0, 'changed': 0, 'deferred_files': 0, 'failed_projects': 0}
+    counts['writeback_association'] = writeback.reconcile(db, DATA, clean, resolve_project_id,
+                                                       min(8, budget) if budget else 8)
+    write_file(DATA / 'writeback-links.json', json_text({'at': now(), **counts['writeback_association']}) + '\n')
     seen = set()
     discovery_sources = {}
     for pid in ids:
@@ -2041,6 +2048,8 @@ def main():
     packet_run.add_argument('--force', action='store_true')
     watch_files = commands.add_parser('watch-files', help='Watch an explicitly chosen folder for local working presentations')
     watch_files.add_argument('path', type=Path)
+    link_work = commands.add_parser('reconcile-writebacks', help='Associate native successful MCP receipts with work logs locally')
+    link_work.add_argument('--seconds', type=float, default=8)
     extract_run = commands.add_parser('extract-packets', help='Extract evidence from archived chats through the configured Eco route')
     extract_run.add_argument('--session', action='append')
     extract_run.add_argument('--limit', type=int, default=5)
@@ -2104,6 +2113,12 @@ def main():
             print(json_text(status))
             if status['sqlite'] != 'ok':
                 return 1
+        elif args.command == 'reconcile-writebacks':
+            if not 0 < args.seconds <= 30:
+                raise ValueError('Set a writeback association budget between 0 and 30 seconds')
+            result = writeback.reconcile(db, DATA, clean, resolve_project_id, args.seconds)
+            write_file(DATA / 'writeback-links.json', json_text({'at': now(), **result}) + '\n')
+            print(json_text(result))
         elif args.command == 'watch-files':
             directory = args.path.expanduser().resolve(strict=True)
             if not directory.is_dir() or directory.is_relative_to(DATA) or directory.is_relative_to(REPO):

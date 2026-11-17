@@ -100,7 +100,7 @@ def work_session_id(row):
 def delivery_writeback(db, start, finish):
     deliveries = defaultdict(set)
     written = set()
-    rows = db.execute("""SELECT source,session_id,kind,data FROM work
+    rows = db.execute("""SELECT source,session_id,kind,data FROM work_with_sessions
                       WHERE session_id IS NOT NULL AND occurred>=? AND occurred<?""", (start, finish))
     for source, sid, kind, payload in rows:
         sid = work_session_id({'source': source, 'session_id': sid, 'kind': kind})

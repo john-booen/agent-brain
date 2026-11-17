@@ -1082,7 +1082,7 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
         return {**result, 'status': 'disabled'}
     recent = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
     owners = defaultdict(list)
-    for pid, name, sid in db.execute("""SELECT DISTINCT p.id,p.name,w.session_id FROM projects p JOIN work w ON w.project_id=p.id
+    for pid, name, sid in db.execute("""SELECT DISTINCT p.id,p.name,w.session_id FROM projects p JOIN work_with_sessions w ON w.project_id=p.id
                 WHERE w.session_id IS NOT NULL AND w.occurred>=?
                 AND p.id IN (SELECT project_id FROM work GROUP BY project_id HAVING count(*)>=2)""", (recent,)):
         owners[sid].append((pid, name))
@@ -1177,7 +1177,7 @@ def tag_batch(db, directory, settings, limit, visible, paths_in, encode, model, 
 
 def write_index(db, directory, pid, name):
     items = db.execute("""SELECT r.session_id,r.data FROM recall_segments r WHERE EXISTS
-        (SELECT 1 FROM work w WHERE w.session_id=r.session_id AND w.project_id=?)
+        (SELECT 1 FROM work_with_sessions w WHERE w.session_id=r.session_id AND w.project_id=?)
         ORDER BY r.indexed DESC LIMIT 40""", (pid,))
     body = [f'# {name}', '', '## 会话主题与出处','']
     for sid, raw in items:

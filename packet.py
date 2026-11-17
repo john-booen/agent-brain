@@ -14,7 +14,7 @@ import notes
 import discovery
 
 
-VERSION = 29
+VERSION = 30
 FILE_SUMMARY_METHOD = 'local-outline-v2'
 EXTENSIONS = r'(?:docx|pdf|xlsx|md|markdown|txt|csv|tsv|pptx|doc|xls|zip|html|png|jpe?g)'
 PATH = re.compile(r'(?<![\w/])(/(?:Users|Volumes|private|tmp|var)/[^\n\r<>\[\]（）。，；、`"|]*?\.' + EXTENSIONS + r')(?=$|[^\w.])', re.I)
@@ -109,12 +109,12 @@ def group_by_task(item, key, confirmed_version):
 
 def work_rows(db, project_id):
     return list(db.execute("""
-        SELECT w.*, (SELECT COUNT(DISTINCT w2.project_id) FROM work w2
+        SELECT w.*, (SELECT COUNT(DISTINCT w2.project_id) FROM work_with_sessions w2
           LEFT JOIN project_record_exclusions e2 ON e2.work_id=w2.id
           WHERE w2.session_id=w.session_id AND e2.work_id IS NULL) AS project_count
-        FROM work w LEFT JOIN project_record_exclusions e ON e.work_id=w.id
+        FROM work_with_sessions w LEFT JOIN project_record_exclusions e ON e.work_id=w.id
         WHERE w.project_id=? AND e.work_id IS NULL
-        ORDER BY w.occurred, w.rowid
+        ORDER BY w.occurred, w.work_rowid
     """, (project_id,)))
 
 
@@ -702,7 +702,7 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     lookup_ids = sorted({project_id, *aliases})
     placeholders = ','.join('?' for _ in lookup_ids)
     extracted_rows = db.execute(f"""SELECT e.session_id,e.revision,e.extracted_at FROM packet_extractions e
-        WHERE EXISTS (SELECT 1 FROM work w WHERE w.session_id=e.session_id AND w.project_id IN ({placeholders}))
+        WHERE EXISTS (SELECT 1 FROM work_with_sessions w WHERE w.session_id=e.session_id AND w.project_id IN ({placeholders}))
               OR e.session_id IN (SELECT a.session_id FROM packet_extraction_assignments a
                                   WHERE a.project_id IN ({placeholders})) ORDER BY e.session_id""",
         (*lookup_ids, *lookup_ids)).fetchall()
@@ -739,7 +739,7 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         alternatives = defaultdict(list)
         own_terms = set().union(*(project_terms(name) for name in names))
         for sid in sessions:
-            for row in db.execute('SELECT DISTINCT p.name FROM work w JOIN projects p ON p.id=w.project_id '
+            for row in db.execute('SELECT DISTINCT p.name FROM work_with_sessions w JOIN projects p ON p.id=w.project_id '
                                   'WHERE w.session_id=? AND w.project_id<>?', (sid, project_id)):
                 terms = project_terms(row[0]) - own_terms
                 if terms:
