@@ -517,6 +517,11 @@ def packet_coverage():
         return {'coverage': '部分来源采集不完整'}
     if 'retry' in collection:
         return {'coverage': '有会话等下轮补读'}
+    try:
+        if health.read_json(DATA / 'file-discovery.json').get('unreadable'):
+            return {'coverage': '本机工作稿自动发现有文件或目录不可读'}
+    except (OSError, ValueError):
+        return {'coverage': '本机工作稿自动发现状态无法读取'}
     return {}
 
 
@@ -891,6 +896,8 @@ def packet_item(db, item, kind, compact=False):
         if item.get('kind') in {'旧版本', '草稿', '交付'}:
             status = item['status']
             label = f"{item['kind']} · {approval_label if status == '用户确认' else status}"
+        if item.get('working_copy'):
+            label = '本机工作版 · 实际使用待核'
     elif kind == 'rules' or item.get('scope'):
         label = (label + ' · ' if label else '') + item['scope']
     if item.get('modeled'):
@@ -1847,6 +1854,7 @@ def mcp(db):
                               "For nearby messages use around alone as the center message number. "
                               "Use project, session_id and ordinal with read_file for a shared filename. "
                               "For an actually used file, look for the user's evidence for that exact version. "
+                              "For local edits, check project deliverables for local working copies. "
                               "Report uncertainty if only a handoff or earlier approval is available. "
                               "Skip project tools for unrelated new work. Use log_work for completed work and explicit user approvals. "
                               "For a file delivery, include task and path in each deliverables item.")}
@@ -1903,6 +1911,7 @@ def build_packets(db, args):
               'built': 0, 'cached': 0, 'missing': 0, 'unsupported': 0, 'unavailable': 0, 'unreadable': 0,
               'no_text': 0, 'changed': 0, 'deferred_files': 0, 'failed_projects': 0}
     seen = set()
+    discovery_sources = {}
     for pid in ids:
         try:
             data, rebuilt = packet.load(db, DATA, pid, visible, clean, args.force)
@@ -1914,6 +1923,12 @@ def build_packets(db, args):
         counts['rebuilt'] += rebuilt
         for field in PACKET_FIELDS:
             counts['with_' + field] += bool(data[field])
+        for item in data['deliverables']:
+            path = item.get('path')
+            if (path and Path(path).is_absolute() and Path(path).suffix.casefold() == '.pptx'
+                    and not item.get('working_copy') and not Path(path).is_relative_to(DATA)
+                    and not Path(path).is_relative_to(REPO)):
+                discovery_sources.setdefault(path, set()).add(pid)
         if args.files:
             for item in data['inputs'] + data['deliverables']:
                 value = item.get('path')
@@ -1932,6 +1947,9 @@ def build_packets(db, args):
                 counts[status] += 1
         if counts['projects'] % 20 == 0:
             print(json_text(counts), file=sys.stderr, flush=True)
+    if args.files:
+        counts['file_discovery'] = packet.discovery.refresh(db, DATA, discovery_sources, expires_at)
+        write_file(DATA / 'file-discovery.json', json_text({'at': now(), **counts['file_discovery']}) + '\n')
     return counts
 
 
@@ -2008,6 +2026,8 @@ def main():
     packet_run.add_argument('--files', action='store_true')
     packet_run.add_argument('--file-budget', type=float, default=0)
     packet_run.add_argument('--force', action='store_true')
+    watch_files = commands.add_parser('watch-files', help='Watch an explicitly chosen folder for local working presentations')
+    watch_files.add_argument('path', type=Path)
     extract_run = commands.add_parser('extract-packets', help='Extract evidence from archived chats through the configured Eco route')
     extract_run.add_argument('--session', action='append')
     extract_run.add_argument('--limit', type=int, default=5)
@@ -2071,6 +2091,16 @@ def main():
             print(json_text(status))
             if status['sqlite'] != 'ok':
                 return 1
+        elif args.command == 'watch-files':
+            directory = args.path.expanduser().resolve(strict=True)
+            if not directory.is_dir() or directory.is_relative_to(DATA) or directory.is_relative_to(REPO):
+                raise ValueError('Choose a working folder outside the application data and code')
+            settings = config()
+            watched = settings.setdefault('file_discovery', {}).setdefault('directories', [])
+            if str(directory) not in watched:
+                watched.append(str(directory))
+                write_file(DATA / 'config.json', json_text(settings) + '\n')
+            print(json_text({'directory': str(directory), 'watching': True}))
         elif args.command == 'build-packets':
             result = build_packets(db, args)
             print(json_text(result), flush=True)

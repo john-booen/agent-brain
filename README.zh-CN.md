@@ -50,6 +50,7 @@ flowchart LR
 - `python3 brain.py health` 按来源显示找到的文件、已索引会话、无消息会话、已有采集副本但未匹配到索引的对话日志和失败。加 `--verify-archive --backup` 可核对 AgentsView 版本并创建本机数据库快照。
 - `python3 brain.py import-conversations claude-ai /本机路径/导出.zip` 导入本机 Claude 导出文件。重复导入同一份会话不会增加记录。
 - `python3 brain.py index-obsidian /本机路径/笔记库` 只读索引明确选择的 Obsidian 库。
+- 用 `python3 brain.py watch-files /本机路径/常用交付文件夹` 一次选定工作目录。定时 `build-packets --files` 会检查其中保存的 PowerPoint。至少两页有辨识度的文本与同一项目已登记源稿一致时，该文件进入资料袋并显示「本机工作版 · 实际使用待核」。页内容在本机比对，已观察到的版本保留指纹。共用模板及跨项目混合匹配保留待归属。
 - `python3 brain.py weekly-report` 生成上一个完整周的私有报告。定时采集配置 `AGENT_BRAIN_WEEKLY=1` 后按北京时间每周一出报告。
 
 ## 虚构演示

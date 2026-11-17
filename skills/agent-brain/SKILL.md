@@ -17,6 +17,8 @@ Reuse the project packet in the same conversation until the user asks for a refr
 
 For a file the user actually used or sent, look for a user statement identifying that version. The user may have edited or merged drafts outside the conversation. A handoff records a delivery, and a confirmation records acceptance of that version at that time. If evidence of actual use is missing, report the known delivery and say the actual version is uncertain. When the user provides an identified local final file, record its path and the user's original confirmation.
 
+For files edited or merged locally, check the project's `deliverables` for a local working copy and open its current version with `read_file`. Matching source pages establish its project association. Verify actual adoption against user evidence for that version.
+
 Before editing an existing deliverable, use `read_file` locally to verify the relevant text and version. When a delivery name is ambiguous, pass `project`, `path` (the filename), `session_id` and `ordinal` from the assistant's delivery. In a local recall page, first resolve the `session` key through `sessions`. For a confirmed result, use `delivery_ordinal` when present. This reads a current registered file; use the historical messages and fingerprint to check whether it was overwritten. Treat the short card as navigation and preserve any uncertainty or fallback level returned by `recall`.
 
 Use the same `read_file` arguments with the original user message to open a registered input. If the registered file is unavailable locally, ask for a copy or a verified replacement location.

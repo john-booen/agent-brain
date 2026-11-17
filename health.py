@@ -32,6 +32,7 @@ def collection_state(info):
 
 def report(db, directory):
     coverage = read_json(directory / 'coverage.json')
+    file_discovery = read_json(directory / 'file-discovery.json')
     instant = datetime.now(timezone.utc)
     boundary = (instant - timedelta(hours=24)).isoformat(timespec='seconds')
     week = (instant - timedelta(days=7)).isoformat()
@@ -97,6 +98,8 @@ def report(db, directory):
     except eco.BudgetUnavailable as exc:
         budget = {'status': str(exc)}
     alerts = [f'{source} 有近期日志落后超过 1 小时' for source, info in sources.items() if info.get('lagged_over_60m')]
+    if file_discovery.get('unreadable'):
+        alerts.append('本机工作稿自动发现有文件或目录不可读')
     if queue['oldest'] and queue['oldest'] < boundary:
         alerts.append('最旧未标记段落超过 24 小时')
     if budget.get('route_retry_after'):
@@ -114,6 +117,7 @@ def report(db, directory):
     return {'at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'sources': sources,
             'last_collection': coverage.get('completedAt'), 'collector_exit': coverage.get('exit'),
             'packet_refresh': coverage.get('packetRefresh'), 'file_refresh': coverage.get('fileRefresh'),
+            'file_discovery': file_discovery,
             'pending_summary_sessions': indexed,
             'model_last_24h': dict(zip(('attempts','measured_input_tokens','measured_output_tokens','reserved_tokens'), totals)),
             'eco_credits': budget,

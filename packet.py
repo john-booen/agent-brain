@@ -11,6 +11,7 @@ from pathlib import Path
 
 import file_text
 import notes
+import discovery
 
 
 VERSION = 29
@@ -73,6 +74,7 @@ def schema(db):
     );
     CREATE INDEX IF NOT EXISTS work_session_project ON work(session_id, project_id);
     """)
+    discovery.schema(db)
 
 
 def paths_in(text):
@@ -694,6 +696,7 @@ def build(rows, versions, index, visible, clean, names, project_terms_by_session
 
 def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     rows = work_rows(db, project_id)
+    working_files = discovery.project_entries(db, data_dir, project_id)
     session_ids = {row['session_id'] for row in rows if row['session_id']}
     aliases = {row[0] for row in db.execute('SELECT old_id FROM project_redirects WHERE project_id=?', (project_id,))}
     lookup_ids = sorted({project_id, *aliases})
@@ -706,8 +709,11 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
     previous = db.execute('SELECT data, signature FROM project_packets WHERE project_id=?', (project_id,)).fetchone()
     relocations = {row[0]: row[1] for row in db.execute('SELECT old_path,path FROM packet_path_relocations ORDER BY old_path')}
     notes_revision = db.execute('SELECT MAX(scanned) FROM vault_notes').fetchone()[0]
-    work_signature = hashlib.sha256(json.dumps([VERSION, [tuple(row) for row in rows], relocations,
-                                                [tuple(row) for row in extracted_rows], notes_revision], ensure_ascii=False).encode()).hexdigest()
+    signature_parts = [VERSION, [tuple(row) for row in rows], relocations,
+                       [tuple(row) for row in extracted_rows], notes_revision]
+    if working_files:
+        signature_parts.append(working_files)
+    work_signature = hashlib.sha256(json.dumps(signature_parts, ensure_ascii=False).encode()).hexdigest()
     if lazy and previous and not force:
         if previous['signature'].startswith(work_signature + ':'):
             cached = json.loads(previous['data'])
@@ -760,6 +766,9 @@ def load(db, data_dir, project_id, visible, clean, force=False, lazy=False):
         new_rows = [{'session_id': sid, 'source': sid.split(':', 1)[0], 'occurred': indexed_at[sid], 'kind': 'model',
                      'data': '{}'} for sid in sorted(extracted.keys() - session_ids)]
         result = build(rows, versions, index, visible, clean, names, alternatives, extracted, project_id, new_rows)
+        registered_paths = {item['path'] for field in ('inputs', 'deliverables', 'history')
+                            for item in result[field] if item.get('path')}
+        result['deliverables'] = [item for item in working_files if item['path'] not in registered_paths] + result['deliverables']
         for cwd in sorted({metadata[1] for metadata in versions.values() if metadata[1]}):
             for note in notes.project_inputs(db, cwd):
                 result['inputs'].append(entry(note['path'], {'source': 'obsidian', 'session_id': 'obsidian',
@@ -795,7 +804,8 @@ def authorized_paths(db, value):
         SELECT p.project_id FROM project_packets p
         WHERE EXISTS (SELECT 1 FROM json_each(p.data,'$.inputs') i WHERE json_extract(i.value,'$.path')=?)
            OR EXISTS (SELECT 1 FROM json_each(p.data,'$.deliverables') d WHERE json_extract(d.value,'$.path')=?)
-        """, (value, value))]
+        UNION SELECT project_id FROM local_file_candidates WHERE path=? AND project_id IS NOT NULL
+        """, (value, value, value))]
 
 
 def summary_status(db, value):

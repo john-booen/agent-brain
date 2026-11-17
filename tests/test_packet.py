@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tempfile
 from time import sleep
+from types import SimpleNamespace
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1912,6 +1913,108 @@ Delivered `research/report.md` and [summary](/tmp/atlas.md:42).
         self.assertEqual(brain.packet.prepare_file(self.db, value, brain.clean)[0], 'cached')
         word.write_text('changed')
         self.assertIsNone(brain.packet.file_summary(self.db, value))
+
+    def write_presentation(self, path, pages):
+        from xml.sax.saxutils import escape
+        relationships = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+        with ZipFile(path, 'w') as deck:
+            slides = ''.join(f'<p:sldId r:id="slide{n}"/>' for n in range(1, len(pages) + 1))
+            deck.writestr('ppt/presentation.xml',
+                          f'<p:presentation xmlns:p="urn:p" xmlns:r="{relationships}">'
+                          f'<p:sldIdLst>{slides}</p:sldIdLst></p:presentation>')
+            links = ''.join(f'<Relationship Id="slide{n}" Type="test/slide" Target="slides/slide{n}.xml"/>'
+                            for n in range(1, len(pages) + 1))
+            deck.writestr('ppt/_rels/presentation.xml.rels', f'<Relationships>{links}</Relationships>')
+            for n, text in enumerate(pages, 1):
+                deck.writestr(f'ppt/slides/slide{n}.xml',
+                              '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp><p:txBody>'
+                              f'<a:p><a:r><a:t>{escape(text)}</a:t></a:r></a:p>'
+                              '</p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+
+    def refresh_files(self):
+        return brain.build_packets(self.db, SimpleNamespace(project=None, days=60, min_records=0,
+                                   limit=0, files=True, force=False, file_budget=5))
+
+    def test_discovered_merged_presentation_can_be_read_from_its_project(self):
+        first, second = self.root/'agent-a.pptx', self.root/'agent-b.pptx'
+        page_a, page_b = ('Fictional Atlas product details. ' * 6, 'Fictional Atlas market analysis. ' * 6)
+        self.write_presentation(first, [page_a])
+        self.write_presentation(second, [page_b])
+        for path, source in ((first, 'codex'), (second, 'cowork')):
+            self.tool('log_work', project='Atlas', create_project=True, source=source,
+                      summary='Deliver a pitch draft.', deliverables=[{'task':path.stem, 'path':str(path)}])
+        folder = self.root/'user-output'
+        folder.mkdir()
+        merged = folder/'My merged pitch.pptx'
+        self.write_presentation(merged, [page_a, page_b, 'Manually rewritten closing.'])
+        outside = self.root/'Outside pitch.pptx'
+        self.write_presentation(outside, [page_a, page_b])
+        (folder/'linked.pptx').symlink_to(outside)
+        (folder/'~$locked.pptx').write_text('Temporary office data.')
+        self.assertEqual(self.refresh_files()['file_discovery']['directories'], 0)
+        env = {**os.environ, 'AGENT_BRAIN_DATA': str(self.data)}
+        subprocess.run([__import__('sys').executable, str(Path(brain.__file__)), 'watch-files', str(folder)],
+                       env=env, check=True, stdout=subprocess.DEVNULL)
+        self.assertEqual(self.refresh_files()['file_discovery']['waiting'], 1)
+        self.assertNotIn(merged.name, self.tool('get_project', project='Atlas')['card'])
+        self.assertEqual(self.refresh_files()['file_discovery']['matched'], 1)
+        card = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn(merged.name, card)
+        self.assertIn('本机工作版 · 实际使用待核', card)
+        self.assertNotIn('linked.pptx', card)
+        original = self.tool('read_file', project='Atlas', path=merged.name, page=3)
+        self.assertIn('Manually rewritten closing.', original['text'])
+        self.assertIn('Manually rewritten closing.', self.tool('read_file', path=str(merged), page=3)['text'])
+
+        self.write_presentation(merged, [page_a, page_b, 'A later local revision.'])
+        self.assertEqual(self.refresh_files()['file_discovery']['waiting'], 1)
+        self.assertEqual(self.refresh_files()['file_discovery']['matched'], 1)
+        with self.assertRaisesRegex(ValueError, '指纹已变化'):
+            self.tool('read_file', project='Atlas', path=merged.name, expected_sha256=original['sha256'])
+        self.assertIn('A later local revision.', self.tool('read_file', project='Atlas', path=merged.name, page=3)['text'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM local_file_versions WHERE path=?',
+                                        (str(merged),)).fetchone()[0], 2)
+        (self.data/'config.json').write_text('{"file_discovery":{"directories":[]}}')
+        self.assertNotIn(merged.name, self.tool('get_project', project='Atlas')['card'])
+        (self.data/'config.json').write_text(json.dumps({'file_discovery':{'directories':[str(folder)]}}))
+        self.tool('log_work', project='Atlas', source='codex', summary='Register the local handoff.',
+                  deliverables=[{'path':str(merged), 'task':'Manual pitch'}])
+        registered = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('Manual pitch', registered)
+        self.assertIn(merged.name, registered)
+        self.assertNotIn('本机工作版', registered)
+
+    def test_discovery_keeps_shared_templates_and_cross_project_merges_ambiguous(self):
+        common = ['Shared template and standard boilerplate. ' * 5, 'Shared terms and generic context. ' * 5]
+        atlas = ['Atlas distinctive product and technology. ' * 5, 'Atlas market and operating figures. ' * 5]
+        orion = ['Orion distinctive product and technology. ' * 5, 'Orion market and operating figures. ' * 5]
+        for name, pages in (('Atlas', atlas), ('Orion', orion)):
+            path = self.root/f'{name}.pptx'
+            self.write_presentation(path, common + pages)
+            self.tool('log_work', project=name, create_project=True, source='codex', summary='Deliver the draft.',
+                      deliverables=[{'task':'Pitch', 'path':str(path)}])
+        folder = self.root/'deliveries'
+        folder.mkdir()
+        for name, pages in (('Template', common), ('Mixed', atlas + orion), ('Atlas work', atlas + common)):
+            self.write_presentation(folder/f'{name}.pptx', pages)
+        (self.data/'config.json').write_text(json.dumps({'file_discovery':{'directories':[str(folder)]}}))
+        self.refresh_files()
+        result = self.refresh_files()['file_discovery']
+        self.assertEqual((result['matched'], result['ambiguous']), (1, 2))
+        atlas_card = self.tool('get_project', project='Atlas', section='deliverables')['card']
+        self.assertIn('Atlas work.pptx', atlas_card)
+        self.assertNotIn('Template.pptx', atlas_card)
+        self.assertNotIn('Mixed.pptx', atlas_card)
+        self.assertNotIn('Atlas work.pptx', self.tool('get_project', project='Orion')['card'])
+        with self.assertRaisesRegex(ValueError, '只可读取'):
+            self.tool('read_file', project='Atlas', path=str(folder/'Mixed.pptx'))
+
+    def test_missing_discovery_directory_is_visible_in_coverage(self):
+        (self.data/'config.json').write_text(json.dumps({
+            'file_discovery': {'directories': [str(self.root/'missing')]}}))
+        result = self.refresh_files()['file_discovery']
+        self.assertEqual(result['unreadable'], 1)
+        self.assertIn('工作稿自动发现', brain.packet_coverage()['coverage'])
 
     def test_read_file_reads_powerpoint_in_presentation_order(self):
         file = self.root/'deck.pptx'
